@@ -1,0 +1,4 @@
+godstar_state.json
+__pycache__/
+.env
+*.pyc
