@@ -437,6 +437,301 @@ class BotOrderTest(unittest.TestCase):
         self.assertTrue(any("۲۴ ساعت" in t for _, t, _ in self.sent))
 
 
+class MenuAndAdminTest(unittest.TestCase):
+    """دکمه‌ی منوی مینی‌اپ، نشان ادمین، جواب ادمین با دکمه‌ی فروشگاه،
+    و داده‌ی واقعی سفارش/کیف پول در وب‌اپ."""
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.store = Store(state_file=os.path.join(self.tmp.name, "state.json"))
+        self.store.load()
+        godstar.ensure_defaults(self.store)
+        self.sent = []
+        self.api_calls = []
+        self._orig_send = godstar.send_message
+        self._orig_api = godstar.api
+        self._orig_admin = godstar.ADMIN_CHAT_ID
+        self._orig_webapp = godstar.WEBAPP_URL
+        godstar.send_message = lambda chat_id, text, reply_markup=None: self.sent.append(
+            (chat_id, text, reply_markup)) or {"message_id": 1}
+        godstar.api = lambda method, **data: self.api_calls.append(
+            (method, data)) or {"message_id": 99}
+        godstar.ADMIN_CHAT_ID = "278899906"
+        godstar.WEBAPP_URL = "https://example.invalid/app"
+
+    def tearDown(self):
+        godstar.send_message = self._orig_send
+        godstar.api = self._orig_api
+        godstar.ADMIN_CHAT_ID = self._orig_admin
+        godstar.WEBAPP_URL = self._orig_webapp
+        self.tmp.cleanup()
+
+    def test_welcome_admin_badge_and_version_only_for_admin(self):
+        admin_text = godstar.welcome_text(True)
+        self.assertIn("👑", admin_text)
+        self.assertIn(godstar.BOT_VERSION, admin_text)
+        user_text = godstar.welcome_text(False)
+        self.assertNotIn("👑", user_text)
+        self.assertNotIn(godstar.BOT_VERSION, user_text)
+
+    def test_setup_menu_button_opens_webapp(self):
+        self.assertTrue(godstar.setup_menu_button())
+        self.assertEqual(len(self.api_calls), 1)
+        method, data = self.api_calls[0]
+        self.assertEqual(method, "setChatMenuButton")
+        import json as _json
+        button = _json.loads(data["menu_button"])
+        self.assertEqual(button["type"], "web_app")
+        self.assertEqual(button["web_app"]["url"], "https://example.invalid/app")
+
+    def test_setup_menu_button_skipped_without_url(self):
+        godstar.WEBAPP_URL = ""
+        self.assertFalse(godstar.setup_menu_button())
+        self.assertEqual(self.api_calls, [])
+
+    def test_admin_reply_to_customer_has_shop_button(self):
+        self.store.map_support_message(55, 111)
+        msg = {"chat": {"id": 278899906}, "from": {"id": 278899906},
+               "text": "سلام، درست شد",
+               "reply_to_message": {"message_id": 55}}
+        godstar.handle_message(self.store, msg)
+        to_customer = [s for s in self.sent if s[0] == 111]
+        self.assertEqual(len(to_customer), 1)
+        self.assertEqual(to_customer[0][1], "سلام، درست شد")
+        markup = to_customer[0][2]
+        self.assertIsNotNone(markup)
+        self.assertEqual(markup["inline_keyboard"][0][0]["web_app"]["url"],
+                         "https://example.invalid/app")
+        self.assertTrue(any("جواب به مشتری" in t for _, t, _ in self.sent))
+
+    def test_webapp_my_orders_lists_real_orders(self):
+        order = self.store.create_order(111, "order", "members",
+                                        {"count": 1000}, "3")
+        msg = {"chat": {"id": 111}, "from": {"id": 111, "username": "u"},
+               "web_app_data": {"data": '{"type": "my_orders"}'}}
+        godstar.handle_web_app_data(self.store, msg)
+        self.assertTrue(any(order["order_no"] in t for _, t, _ in self.sent))
+
+    def test_webapp_my_orders_empty(self):
+        msg = {"chat": {"id": 111}, "from": {"id": 111, "username": "u"},
+               "web_app_data": {"data": '{"type": "my_orders"}'}}
+        godstar.handle_web_app_data(self.store, msg)
+        self.assertTrue(any("هنوز سفارشی" in t for _, t, _ in self.sent))
+
+    def test_webapp_my_wallet_shows_real_balance(self):
+        self.store.credit_wallet(111, 7, note="test")
+        msg = {"chat": {"id": 111}, "from": {"id": 111, "username": "u"},
+               "web_app_data": {"data": '{"type": "my_wallet"}'}}
+        godstar.handle_web_app_data(self.store, msg)
+        self.assertTrue(any("7" in t and "USDT" in t for _, t, _ in self.sent))
+
+
+class RemindersAndReorderTest(unittest.TestCase):
+    """یادآوری تمدید و سفارش در انتظار، سفارش دوباره، چسباندن رسید."""
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.store = Store(state_file=os.path.join(self.tmp.name, "state.json"))
+        self.store.load()
+        godstar.ensure_defaults(self.store)
+        self.sent = []
+        self.api_calls = []
+        self._orig_send = godstar.send_message
+        self._orig_api = godstar.api
+        self._orig_admin = godstar.ADMIN_CHAT_ID
+        self._orig_webapp = godstar.WEBAPP_URL
+        godstar.send_message = lambda chat_id, text, reply_markup=None: self.sent.append(
+            (chat_id, text, reply_markup)) or {"message_id": 1}
+        godstar.api = lambda method, **data: self.api_calls.append(
+            (method, data)) or {"message_id": 99}
+        godstar.ADMIN_CHAT_ID = "278899906"
+        godstar.WEBAPP_URL = "https://example.invalid/app"
+        godstar._LAST_REMINDER_CHECK = 0
+
+    def tearDown(self):
+        godstar.send_message = self._orig_send
+        godstar.api = self._orig_api
+        godstar.ADMIN_CHAT_ID = self._orig_admin
+        godstar.WEBAPP_URL = self._orig_webapp
+        self.tmp.cleanup()
+
+    def _iso_ago(self, seconds):
+        import datetime as _dt
+        return (_dt.datetime.now(_dt.timezone.utc)
+                - _dt.timedelta(seconds=seconds)).isoformat()
+
+    def _reset_throttle(self):
+        godstar._LAST_REMINDER_CHECK = 0
+
+    def test_created_at_is_iso_string(self):
+        user = self.store.ensure_user(111)
+        self.assertIsInstance(user["created_at"], str)
+        self.assertIn("T", user["created_at"])
+        order = self.store.create_order(111, "order", "members", {}, "3")
+        self.assertIsInstance(order["created_at"], str)
+
+    def test_list_orders_sorts_mixed_timestamps(self):
+        o1 = self.store.create_order(111, "order", "members", {}, "3")
+        o1["created_at"] = 1000  # داده‌ی قدیمی (epoch)
+        o2 = self.store.create_order(111, "order", "members", {}, "3")
+        o2["created_at"] = self._iso_ago(10)
+        order_nos = [o["order_no"] for o in self.store.list_orders(user_id=111)]
+        self.assertEqual(order_nos, [o1["order_no"], o2["order_no"]])
+
+    def test_confirm_sets_confirmed_at(self):
+        o1 = self.store.create_order(111, "order", "members", {}, "3")
+        self.store.set_order_status(o1["order_no"], "confirmed")
+        self.assertIn("confirmed_at", o1)
+        o2 = self.store.create_order(111, "order", "members", {}, "3")
+        self.store.set_order_status(o2["order_no"], "rejected")
+        self.assertNotIn("confirmed_at", o2)
+
+    def test_reminder_flags_once(self):
+        self.assertTrue(self.store.add_reminder("GS-1001", "renewal"))
+        self.assertFalse(self.store.add_reminder("GS-1001", "renewal"))
+        self.assertTrue(self.store.has_reminder("GS-1001", "renewal"))
+        self.assertFalse(self.store.has_reminder("GS-1001", "pending_admin"))
+
+    def test_pending_reminder_after_two_hours_once(self):
+        order = self.store.create_order(111, "order", "members",
+                                        {"count": 1000}, "3")
+        order["created_at"] = self._iso_ago(3 * 3600)
+        godstar.check_reminders(self.store)
+        admin_msgs = [t for c, t, _ in self.sent if str(c) == "278899906"]
+        self.assertTrue(any("۲ ساعت" in t and order["order_no"] in t
+                            for t in admin_msgs))
+        self._reset_throttle()
+        before = len(self.sent)
+        godstar.check_reminders(self.store)
+        self.assertEqual(len(self.sent), before)
+
+    def test_pending_reminder_not_before_two_hours(self):
+        order = self.store.create_order(111, "order", "members",
+                                        {"count": 1000}, "3")
+        order["created_at"] = self._iso_ago(3600)
+        godstar.check_reminders(self.store)
+        self.assertFalse(any(order["order_no"] in t for _, t, _ in self.sent))
+
+    def test_renewal_reminder_three_days_before_expiry(self):
+        order = self.store.create_order(
+            111, "order", "bot",
+            {"bot_type": "management", "plan": "3m",
+             "channel_id": "@GodNews24"}, "28")
+        self.store.set_order_status(order["order_no"], "confirmed")
+        order["confirmed_at"] = self._iso_ago(88 * 86400)  # پایان تا ۲ روز دیگر
+        godstar.check_reminders(self.store)
+        user_msgs = [t for c, t, _ in self.sent if c == 111]
+        self.assertTrue(any("۳ روز" in t and "تمام می‌شود" in t
+                            for t in user_msgs))
+        self._reset_throttle()
+        before = len(self.sent)
+        godstar.check_reminders(self.store)
+        self.assertEqual(len(self.sent), before)
+
+    def test_renewal_reminder_not_early_or_custom(self):
+        o1 = self.store.create_order(
+            111, "order", "bot",
+            {"bot_type": "management", "plan": "3m",
+             "channel_id": "@GodNews24"}, "28")
+        self.store.set_order_status(o1["order_no"], "confirmed")
+        o1["confirmed_at"] = self._iso_ago(10 * 86400)  # ۸۰ روز مانده
+        o2 = self.store.create_order(
+            111, "order", "bot",
+            {"bot_type": "custom", "plan": "3m",
+             "channel_id": "@GodNews24"}, "0")
+        self.store.set_order_status(o2["order_no"], "confirmed")
+        o2["confirmed_at"] = self._iso_ago(88 * 86400)
+        godstar.check_reminders(self.store)
+        self.assertFalse(any("تمام می‌شود" in t for _, t, _ in self.sent))
+
+    def test_reorder_from_wallet(self):
+        self.store.credit_wallet(111, 100, note="test")
+        orig = godstar.place_order(
+            self.store, 111, "members",
+            {"count": 1000, "channel_id": "@GodNews24"}, paid_by_wallet=True)
+        self.assertEqual(self.store.wallet_balance(111), 97.0)
+        query = {"data": f"reorder:{orig['order_no']}", "id": "q1",
+                 "message": {"chat": {"id": 111}}}
+        godstar.handle_callback(self.store, query)
+        self.assertEqual(self.store.wallet_balance(111), 94.0)
+        self.assertIsNotNone(self.store.get_order("GS-1002"))
+        self.assertTrue(any("سفارش دوباره ثبت شد" in t
+                            and "از کیف پول" in t for _, t, _ in self.sent))
+
+    def test_reorder_deferred_receipt_without_balance(self):
+        orig = godstar.place_order(
+            self.store, 222, "members",
+            {"count": 1000, "channel_id": "@GodNews24"},
+            tx_hash="0x" + "ab" * 32)
+        query = {"data": f"reorder:{orig['order_no']}", "id": "q1",
+                 "message": {"chat": {"id": 222}}}
+        godstar.handle_callback(self.store, query)
+        new_order = self.store.get_order("GS-1002")
+        self.assertIsNotNone(new_order)
+        self.assertEqual(new_order["status"], "pending")
+        self.assertTrue(any("رسید را همین‌جا بفرست" in t
+                            for _, t, _ in self.sent))
+
+    def test_reorder_other_users_order_rejected(self):
+        orig = godstar.place_order(
+            self.store, 111, "members",
+            {"count": 1000, "channel_id": "@GodNews24"},
+            tx_hash="0x" + "ab" * 32)
+        query = {"data": f"reorder:{orig['order_no']}", "id": "q1",
+                 "message": {"chat": {"id": 333}}}
+        godstar.handle_callback(self.store, query)
+        self.assertIsNone(self.store.get_order("GS-1002"))
+        self.assertTrue(any("مال تو نیست" in (d.get("text") or "")
+                            for m, d in self.api_calls
+                            if m == "answerCallbackQuery"))
+
+    def test_receipt_attach_photo(self):
+        order = godstar.place_order(
+            self.store, 111, "members",
+            {"count": 1000, "channel_id": "@GodNews24"},
+            receipt_kind="photo")
+        msg = {"chat": {"id": 111}, "from": {"id": 111},
+               "photo": [{"file_id": "small"}, {"file_id": "big"}]}
+        godstar.handle_message(self.store, msg)
+        self.assertEqual(self.store.get_order(order["order_no"])
+                         ["receipt_file_id"], "big")
+        self.assertTrue(any("رسید سفارش" in t and "دریافت شد" in t
+                            for _, t, _ in self.sent))
+
+    def test_receipt_attach_hash(self):
+        order = godstar.place_order(
+            self.store, 111, "members",
+            {"count": 1000, "channel_id": "@GodNews24"},
+            receipt_kind="photo")
+        tx = "0x" + "ab" * 32
+        msg = {"chat": {"id": 111}, "from": {"id": 111}, "text": tx}
+        godstar.handle_message(self.store, msg)
+        self.assertEqual(self.store.get_order(order["order_no"])["tx_hash"], tx)
+
+    def test_receipt_ignored_without_awaiting_order(self):
+        msg = {"chat": {"id": 111}, "from": {"id": 111},
+               "photo": [{"file_id": "big"}]}
+        godstar.handle_message(self.store, msg)
+        self.assertTrue(any("از منوی پایین" in t for _, t, _ in self.sent))
+
+    def test_load_tolerates_missing_table(self):
+        from db import Store as _Store
+        orig = _Store._sb_get_all
+
+        def fake(self, table):
+            if table == "order_reminders":
+                raise RuntimeError("supabase table missing (order_reminders)")
+            return []
+        _Store._sb_get_all = fake
+        try:
+            store = _Store(state_file=os.path.join(self.tmp.name, "s2.json"),
+                           supabase_url="https://x.supabase.co",
+                           supabase_key="k")
+            store.load()
+        finally:
+            _Store._sb_get_all = orig
+        self.assertEqual(store.state["order_reminders"], [])
+        self.assertEqual(store.state["orders"], {})
+
+
 class GetUpdatesTest(unittest.TestCase):
     def setUp(self):
         self._orig_get = godstar.requests.get
