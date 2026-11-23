@@ -103,8 +103,9 @@ function fallbackCopy(text) {
 /* ---------------- demo / shared state ---------------- */
 var WALLET_ADDRESS = "0x747f4B72a967fC504a77Ba38a681939dDeB6F793";
 var BOT_USERNAME = "GodStarServiceBot"; /* NEVER GodStarBot */
-var REFERRAL_CODE = "GOD4821";
+var REFERRAL_CODE = "GOD4821"; /* فقط حالت نمونه (مرورگر)؛ داخل تلگرام کد واقعی را ربات می‌دهد */
 var walletBalance = 20; /* demo balance (USDT); real balance comes from the bot later */
+var walletKnown = true; /* false داخل تلگرام: موجودی واقعی را وب‌اپ نمی‌داند؛ ربات اعتبارسنجی می‌کند */
 
 var friends = [
   { name: "سارا", status: "active" },   /* "active" | "waiting" */
@@ -213,10 +214,12 @@ function renderFriends(list) {
   });
 }
 function refreshWalletLabels() {
-  $("wallet-balance-home").textContent = faTether(walletBalance);
-  $("wallet-balance-pay").textContent = faTether(walletBalance);
-  $("wallet-balance-check").textContent = faTether(walletBalance);
-  $("wallet-balance-wallet").textContent = faTether(walletBalance);
+  /* داخل تلگرام موجودی واقعی معلوم نیست؛ عدد ساختگی نشان نمی‌دهیم. */
+  var label = walletKnown ? faTether(walletBalance) : "—";
+  $("wallet-balance-home").textContent = label;
+  $("wallet-balance-pay").textContent = label;
+  $("wallet-balance-check").textContent = label;
+  $("wallet-balance-wallet").textContent = label;
 }
 function bindHome() {
   $("btn-charge-home").addEventListener("click", function () { haptic("light"); showScreen("wallet"); });
@@ -227,6 +230,11 @@ function bindHome() {
   });
   $("btn-share-referral").addEventListener("click", function () {
     haptic("light");
+    if (!DEMO) {
+      /* داخل تلگرام کد واقعی را فقط ربات می‌داند؛ از ربات می‌گیریم. */
+      sendData({ type: "referral_share" });
+      return;
+    }
     var url = "https://t.me/" + BOT_USERNAME + "?start=" + REFERRAL_CODE;
     var text = "با کد معرفی من در گاد استار سفارش بده؛ هر دو ۱۰٪ تخفیف می‌گیریم!";
     if (tg && tg.openTelegramLink) {
@@ -508,7 +516,8 @@ function renderPayment() {
   var receiptOk = payState.receiptKind === "photo"
     ? !!(payState.receiptFile && payState.receiptFile.file)
     : $("pay-hash").value.trim().length > 0;
-  var walletOk = walletPay && pendingOrder.amount > 0 && walletBalance >= payable;
+  var walletOk = walletPay && pendingOrder.amount > 0 &&
+    (!walletKnown || walletBalance >= payable); /* موجودی نامعلوم = ربات بررسی می‌کند */
   $("pay-submit").disabled = !(receiptOk || walletOk);
   $("pay-note").classList.toggle("hidden", receiptOk || walletOk);
   if (walletOk) $("pay-note").textContent = "";
@@ -573,7 +582,8 @@ function bindPayment() {
   $("pay-submit").addEventListener("click", function () {
     if (!pendingOrder) return;
     haptic("medium");
-    var walletPay = $("pay-from-wallet").checked && walletBalance >= payPayable() && pendingOrder.amount > 0;
+    var walletPay = $("pay-from-wallet").checked &&
+      (!walletKnown || walletBalance >= payPayable()) && pendingOrder.amount > 0;
     var payload = {
       type: "order",
       service: pendingOrder.service,
@@ -681,6 +691,25 @@ var SERVICE_ICONS = {
 function renderOrders(list) {
   var box = $("orders-list");
   box.innerHTML = "";
+  if (!list || list.length === 0) {
+    var empty = document.createElement("p");
+    empty.className = "friends-empty";
+    empty.textContent = DEMO
+      ? "سفارشی نیست."
+      : "هنوز سفارشی ثبت نکردی 🙂 — سفارش‌های واقعی‌ات را با دکمه‌ی «📦 سفارش‌های من» در گفتگو با ربات ببین.";
+    box.appendChild(empty);
+    if (!DEMO) {
+      var btn = document.createElement("button");
+      btn.type = "button"; btn.className = "link-pink";
+      btn.textContent = "📦 مشاهده سفارش‌ها در ربات";
+      btn.addEventListener("click", function () {
+        haptic("light");
+        sendData({ type: "my_orders" });
+      });
+      box.appendChild(btn);
+    }
+    return;
+  }
   list.forEach(function (o) {
     var row = document.createElement("div");
     row.className = "order-row";
@@ -731,6 +760,13 @@ function mountainSVG(uid) {
 function renderChat() {
   var box = $("chat-box");
   box.innerHTML = "";
+  if (!chatMessages || chatMessages.length === 0) {
+    var hint = document.createElement("p");
+    hint.className = "friends-empty";
+    hint.textContent = "هنوز پیامی نفرستادی — پیامت مستقیم به پشتیبانی می‌رسد؛ جوابش در گفتگو با ربات برایت می‌آید 📩";
+    box.appendChild(hint);
+    return;
+  }
   chatMessages.forEach(function (m, i) {
     var b = document.createElement("div");
     b.className = "bubble " + (m.mine ? "mine" : "theirs") + (m.photo ? " photo" : "");
@@ -835,6 +871,18 @@ function init() {
   }
   bindNav(); bindHome(); bindChips(); bindCopyButtons();
   bindAds(); bindMember(); bindBot(); bindPayment(); bindWallet(); bindSupport(); bindSuccess();
+  if (!DEMO) {
+    /* داخل تلگرام داده‌ی نمونه نشان نمی‌دهیم؛ فقط حالت خالی واقعی. */
+    orders = [];
+    chatMessages = [];
+    friends = [];
+    walletBalance = 0;
+    walletKnown = false;
+    $("referral-code").textContent = "—";
+    $("btn-share-referral").textContent = "دریافت کد";
+    var loyaltyCard = document.querySelector(".loyalty-card");
+    if (loyaltyCard) loyaltyCard.style.display = "none";
+  }
   renderFriends(friends);
   renderOrders(orders);
   renderChat();
