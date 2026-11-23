@@ -6,6 +6,9 @@
 #      referrals, support_threads, auto_replies) — نه یک بلاب رمزنگاری‌شده.
 #      اسکیما در supabase.sql است. در شروع، همه‌ی ردیف‌ها خوانده و در حافظه
 #      نگه داشته می‌شوند؛ در ذخیره، ردیف‌ها upsert می‌شوند.
+#      نکته: با سیستم کلید تازه‌ی سوپابیس، هدر apikey باید کلید عمومی
+#      (SUPABASE_PUBLISHABLE_KEY) و هدر Authorization باید کلید محرمانه
+#      (SUPABASE_SERVICE_KEY) باشد؛ یک کلید برای هر دو جواب نمی‌دهد.
 #   2) فایل JSON محلی (godstar_state.json، در gitignore): وقتی متغیرهای
 #      سوپابیس نیستند. برای تست و اجرای محلی.
 #
@@ -53,10 +56,16 @@ def _empty_state():
 
 
 class Store:
-    def __init__(self, state_file=None, supabase_url=None, supabase_key=None):
+    def __init__(self, state_file=None, supabase_url=None, supabase_key=None,
+                 supabase_publishable_key=None):
         self.state_file = state_file or STATE_FILE
         self.supabase_url = supabase_url if supabase_url is not None else (os.environ.get("SUPABASE_URL") or "")
         self.supabase_key = supabase_key if supabase_key is not None else (os.environ.get("SUPABASE_SERVICE_KEY") or "")
+        # کلید عمومی سوپابیس (sb_publishable_...) فقط برای هدر apikey است؛
+        # کلید محرمانه (secret/service) فقط برای Authorization: Bearer.
+        self.supabase_publishable_key = (
+            supabase_publishable_key if supabase_publishable_key is not None
+            else (os.environ.get("SUPABASE_PUBLISHABLE_KEY") or ""))
         self.state = _empty_state()
         self.dirty = False
 
@@ -65,7 +74,11 @@ class Store:
         return bool(self.supabase_url and self.supabase_key)
 
     def _sb_headers(self):
-        return {"apikey": self.supabase_key,
+        # با سیستم کلید تازه‌ی سوپابیس، apikey و Bearer باید دو کلید جدا
+        # باشند (عمومی و محرمانه). اگر کلید عمومی تنظیم نشده باشد، برای
+        # سازگاری با نسخه‌های قدیمی از کلید سرویس برای هر دو استفاده می‌شود.
+        apikey = self.supabase_publishable_key or self.supabase_key
+        return {"apikey": apikey,
                 "Authorization": f"Bearer {self.supabase_key}",
                 "Content-Type": "application/json"}
 
@@ -148,6 +161,7 @@ class Store:
                     state[seq_key] = max(ids)
             self.state = state
             self.dirty = False
+            print("supabase state loaded")
             return state
         except Exception as ex:
             print("supabase load failed:", ex, "— trying local file")
