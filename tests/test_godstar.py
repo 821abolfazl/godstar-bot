@@ -180,6 +180,26 @@ class StoreTest(unittest.TestCase):
         other.load()
         self.assertEqual(other.get_order("GS-1001")["status"], "pending")
 
+    def test_supabase_headers_split_keys(self):
+        # سیستم کلید تازه‌ی سوپابیس: apikey = کلید عمومی، Bearer = کلید محرمانه
+        store = Store(state_file=os.path.join(self.tmp.name, "s2.json"),
+                      supabase_url="https://example.supabase.co",
+                      supabase_key="sb_secret_X",
+                      supabase_publishable_key="sb_publishable_Y")
+        headers = store._sb_headers()
+        self.assertEqual(headers["apikey"], "sb_publishable_Y")
+        self.assertEqual(headers["Authorization"], "Bearer sb_secret_X")
+
+    def test_supabase_headers_fallback_without_publishable_key(self):
+        # اگر کلید عمومی تنظیم نشده باشد، مثل قبل از کلید سرویس برای هر دو
+        # استفاده می‌شود (سازگاری با نسخه‌های قدیمی).
+        store = Store(state_file=os.path.join(self.tmp.name, "s3.json"),
+                      supabase_url="https://example.supabase.co",
+                      supabase_key="sb_secret_X")
+        headers = store._sb_headers()
+        self.assertEqual(headers["apikey"], "sb_secret_X")
+        self.assertEqual(headers["Authorization"], "Bearer sb_secret_X")
+
 
 class BotOrderTest(unittest.TestCase):
     """تست ثبت سفارش و وب‌اپ؛ فراخوانی‌های تلگرام کاملاً جایگزین می‌شوند."""
