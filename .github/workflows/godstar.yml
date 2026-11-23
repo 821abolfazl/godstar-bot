@@ -39,6 +39,6 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
             SUPABASE_PUBLISHABLE_KEY: ${{ secrets.SUPABASE_PUBLISHABLE_KEY }}
-        WEBAPP_URL: ${{ secrets.WEBAPP_URL }}
+          WEBAPP_URL: ${{ secrets.WEBAPP_URL }}
             LOOP_MINUTES: 55
         run: python bot.py
