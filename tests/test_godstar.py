@@ -437,5 +437,43 @@ class BotOrderTest(unittest.TestCase):
         self.assertTrue(any("۲۴ ساعت" in t for _, t, _ in self.sent))
 
 
+class GetUpdatesTest(unittest.TestCase):
+    def setUp(self):
+        self._orig_get = godstar.requests.get
+        self._orig_sleep = godstar.time.sleep
+        self.sleeps = []
+        godstar.time.sleep = lambda s: self.sleeps.append(s)
+
+    def tearDown(self):
+        godstar.requests.get = self._orig_get
+        godstar.time.sleep = self._orig_sleep
+
+    def _fake_error(self, error_code, retry_after=None):
+        params = {} if retry_after is None else {"retry_after": retry_after}
+
+        class Resp:
+            def json(self):
+                return {"ok": False, "error_code": error_code,
+                        "description": "Too Many Requests",
+                        "parameters": params}
+
+        godstar.requests.get = lambda *a, **k: Resp()
+
+    def test_429_sleeps_retry_after(self):
+        self._fake_error(429, 32)
+        self.assertEqual(godstar.api_get_updates(0), [])
+        self.assertEqual(self.sleeps, [32])
+
+    def test_429_default_wait_without_retry_after(self):
+        self._fake_error(429, None)
+        self.assertEqual(godstar.api_get_updates(0), [])
+        self.assertEqual(self.sleeps, [5])
+
+    def test_other_error_does_not_sleep(self):
+        self._fake_error(403, None)
+        self.assertEqual(godstar.api_get_updates(0), [])
+        self.assertEqual(self.sleeps, [])
+
+
 if __name__ == "__main__":
     unittest.main()
