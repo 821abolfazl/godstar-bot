@@ -99,3 +99,15 @@ on conflict do nothing;
 insert into discount_codes (code, percent, max_uses, uses, active)
 values ('GOD10', 10, 0, 0, true)
 on conflict (code) do nothing;
+
+-- دسترسی‌ها (۲۰۲۶-۱۱-۲۳: بدون این GRANTها نقش service_role روی جدول‌ها
+-- هیچ دسترسی ندارد و PostgREST با 403 «permission denied for table»
+-- جواب می‌دهد؛ کلیدها سالم بودند و خطا از نبود GRANT بود):
+grant select, insert, update, delete on public.users to service_role;
+grant select, insert, update, delete on public.orders to service_role;
+grant select, insert, update, delete on public.wallet_tx to service_role;
+grant select, insert, update, delete on public.discount_codes to service_role;
+grant select, insert, update, delete on public.referrals to service_role;
+grant select, insert, update, delete on public.support_threads to service_role;
+grant select, insert, update, delete on public.auto_replies to service_role;
+grant usage, select on all sequences in schema public to service_role;
