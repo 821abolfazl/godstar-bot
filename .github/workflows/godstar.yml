@@ -37,7 +37,8 @@ jobs:
           GODSTAR_BOT_TOKEN: ${{ secrets.GODSTAR_BOT_TOKEN }}
           ADMIN_CHAT_ID: ${{ secrets.ADMIN_CHAT_ID }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+                 SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          SUPABASE_PUBLISHABLE_KEY: ${{ secrets.SUPABASE_PUBLISHABLE_KEY }}
           WEBAPP_URL: ${{ secrets.WEBAPP_URL }}
           LOOP_MINUTES: 55
         run: python bot.py
