@@ -1,0 +1,43 @@
+name: GodStar Bot
+
+# ربات فروش خدمات «گاد استار» (@GodStarServiceBot)
+# الگو از ربات دنبال‌کننده‌ی GodNews24: حلقه‌ی ۵۵ دقیقه‌ای + ماشه‌های
+# زمان‌بندی‌شده‌ی ~۲۰ دقیقه‌ای به‌عنوان پشتیبان. ریپو عمومیه تا حلقه
+# سقف دقیقه‌ی Actions نداشته باشه؛ هیچ توکن یا داده‌ی حساسی توی ریپو نیست
+# (حافظه یا در سوپابیس است یا در فایل gitignoreشده).
+
+on:
+  schedule:
+    # هر ~۲۰ دقیقه (UTC)؛ تهران = UTC+3:30
+    - cron: "7,27,47 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: godstar-bot
+  cancel-in-progress: false
+
+jobs:
+  godstar-bot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 70
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - run: pip install -q requests
+
+      - name: Run bot
+        env:
+          GODSTAR_BOT_TOKEN: ${{ secrets.GODSTAR_BOT_TOKEN }}
+          ADMIN_CHAT_ID: ${{ secrets.ADMIN_CHAT_ID }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          WEBAPP_URL: ${{ secrets.WEBAPP_URL }}
+          LOOP_MINUTES: 55
+        run: python bot.py
