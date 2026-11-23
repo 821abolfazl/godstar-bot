@@ -19,20 +19,22 @@
 
 import json
 import os
+import re
 import sys
 import time
+from datetime import datetime, timezone
 
 import requests
 
-from db import Store
+from db import Store, _ts_value
 import pricing
 from pricing import (WALLET_ADDRESS, ads_price, member_price, bot_price,
                      compute_order_price, loyalty_eligible,
                      is_valid_channel_id, is_valid_referral_code)
 
-BOT_VERSION = "2026-11-23-0.3"   # فقط توی لاگ و برای ادمین در /start نوشته می‌شه
+BOT_VERSION = "2026-11-24-0.4"   # فقط توی لاگ و برای ادمین در /start نوشته می‌شه
 BOT_USERNAME = "GodStarServiceBot"
-WEBAPP_URL = os.environ.get("WEBAPP_URL") or "https://821abolfazl.github.io/godstar/"
+WEBAPP_URL = os.environ.get("WEBAPP_URL") or "https://821abolfazl.github.io/godstar-bot/"
 
 TOKEN = os.environ.get("GODSTAR_BOT_TOKEN") or ""
 # ادمین فقط از متغیر محیطی خوانده می‌شود؛ اگر تنظیم نشده باشد،
@@ -122,6 +124,35 @@ def is_admin(chat_id):
     return bool(ADMIN_CHAT_ID) and str(chat_id) == str(ADMIN_CHAT_ID)
 
 
+# ---------- دکمه‌ی منوی پایین تلگرام (باز کردن مینی‌اپ) ----------
+def shop_button_markup():
+    """دکمه‌ی شیشه‌ای «باز کردن فروشگاه» برای پیام‌های ربات."""
+    if not WEBAPP_URL:
+        return None
+    return {"inline_keyboard": [[
+        {"text": "🛍 باز کردن فروشگاه", "web_app": {"url": WEBAPP_URL}}]]}
+
+
+def setup_menu_button():
+    """دکمه‌ی «منو» پایینِ چپ تلگرام را روی باز کردن مینی‌اپ می‌گذارد.
+
+    این تنظیم سمت تلگرام ذخیره می‌شود؛ یک بار اجرا کافی است و با هر
+    استارت دوباره تکرار می‌شود تا اگر در BotFather عوض شده باشد برگردد.
+    خطا در آن هرگز نباید استارت ربات را خراب کند.
+    """
+    if not WEBAPP_URL:
+        print("WEBAPP_URL تنظیم نشده — دکمه‌ی منو تنظیم نمی‌شود")
+        return False
+    res = api("setChatMenuButton", menu_button=json.dumps({
+        "type": "web_app", "text": "🛍 فروشگاه",
+        "web_app": {"url": WEBAPP_URL}}, ensure_ascii=False))
+    if res is None:
+        print("تنظیم دکمه‌ی منو ناموفق بود (در لاگ بالا ببین)")
+        return False
+    print("دکمه‌ی منوی مینی‌اپ تنظیم شد")
+    return True
+
+
 # ---------- کیبوردها ----------
 def main_keyboard():
     return {"keyboard": [
@@ -156,7 +187,9 @@ def welcome_text(is_admin_user):
             f"{PAYMENT_NOTE} به آدرس کیف پول ما.\n\n"
             f"{SUPPORT_LINE}")
     if is_admin_user:
-        text += f"\n\nنسخه‌ی ربات: {BOT_VERSION}"
+        text += (f"\n\n👑 شما ادمین هستید\n"
+                 f"نسخه‌ی ربات: {BOT_VERSION}\n"
+                 "دستورهای ادمین: /orders ،/approve ،/reject ،/stats ،/broadcast")
     return text
 
 
@@ -322,7 +355,7 @@ def _discount_context(store, user, discount_code):
 
 def place_order(store, user_id, service, details, discount_code=None,
                 paid_by_wallet=False, tx_hash="", receipt_file_id="",
-                receipt_kind=""):
+                receipt_kind="", defer_receipt=False):
     """سفارش را با قیمت‌گذاری دوباره (هرگز به قیمت مشتری اعتماد نمی‌شود)
     ثبت می‌کند و برمی‌گرداند. خطا = ValueError با پیام فارسی."""
     user = store.ensure_user(user_id)
@@ -394,6 +427,8 @@ def place_order(store, user_id, service, details, discount_code=None,
                 raise ValueError("موجودی کیف پول کافی نیست؛ اول کیف پول را شارژ کن.")
         elif receipt_kind == "photo":
             pass  # عکس فیش بعداً در چت می‌رسد؛ در details ثبت شده است
+        elif defer_receipt:
+            pass  # سفارش دوباره: رسید بعداً در چت می‌رسد (attach_receipt)
         else:
             _require_receipt({"tx_hash": tx_hash, "receipt_file_id": receipt_file_id})
 
@@ -473,6 +508,189 @@ def reject_order(store, order_no):
     return order
 
 
+# ---------- سفارش دوباره + رسید + یادآوری‌ها (v0.4) ----------
+PLAN_DAYS = {"1m": 30, "3m": 90, "6m": 180, "12m": 365}
+PENDING_REMIND_AFTER_SEC = 2 * 3600      # سفارش بیش از ۲ ساعت در انتظار
+RENEWAL_REMIND_BEFORE_SEC = 3 * 86400    # ۳ روز مانده به پایان اشتراک
+RECEIPT_WINDOW_SEC = 24 * 3600           # رسید فقط برای سفارش ۲۴ ساعت اخیر
+REMINDER_CHECK_EVERY_SEC = 15 * 60       # یادآوری‌ها هر ۱۵ دقیقه چک می‌شوند
+_LAST_REMINDER_CHECK = 0
+
+_TX_HASH_RE = re.compile(r"^(0x[0-9a-fA-F]{16,64}|[0-9a-fA-F]{64})$")
+
+
+def _looks_like_tx_hash(text):
+    return bool(text) and bool(_TX_HASH_RE.match(text.strip()))
+
+
+def reorder_order(store, chat_id, order_no):
+    """سفارش دوباره با یک ضربه: همان خدمت با همان مشخصات، قیمت تازه.
+
+    اول از کیف پول پرداخت می‌شود (اگر موجودی کافی باشد)؛ وگرنه سفارش
+    در انتظار می‌ماند و رسید بعداً در چت می‌رسد (attach_receipt).
+    """
+    order = store.get_order(order_no)
+    if order is None:
+        raise ValueError("سفارشی با این شماره پیدا نشد.")
+    if int(order.get("user_id") or 0) != int(chat_id):
+        raise ValueError("این سفارش مال تو نیست.")
+    service = order.get("service")
+    if service not in ("ads", "members", "bot") or order.get("type") != "order":
+        raise ValueError("این سفارش را نمی‌شود دوباره ثبت کرد.")
+    details = dict(order.get("details") or {})
+    details.pop("receipt_file_name", None)
+    details.pop("receipt_file_size", None)
+    user_id = int(chat_id)
+    paid_from_wallet = False
+    try:
+        new_order = place_order(store, user_id, service, details,
+                                paid_by_wallet=True)
+        paid_from_wallet = True
+    except ValueError as ex:
+        if "موجودی کیف پول کافی نیست" not in str(ex):
+            raise
+        new_order = place_order(store, user_id, service, details,
+                                paid_by_wallet=False, defer_receipt=True)
+    notify_admin_new_order(store, new_order)
+    if paid_from_wallet:
+        pay_note = "پرداخت: از کیف پول ✅"
+    else:
+        pay_note = ("پرداخت: رسید را همین‌جا بفرست (عکس فیش یا هش تراکنش) "
+                    "تا سفارشت تایید شود. 📷")
+    send_message(chat_id,
+                 f"سفارش دوباره ثبت شد ✅\n\n"
+                 f"شماره سفارش تازه: {new_order['order_no']}\n"
+                 f"مبلغ: {new_order['amount']} USDT\n"
+                 f"{pay_note}\n\n" + ORDERS_NOTICE)
+    return new_order
+
+
+def reorder_keyboard(orders):
+    """دکمه‌های «دوباره» برای تازه‌ترین سفارش‌های خدمتی کاربر."""
+    rows = []
+    for o in orders:
+        if o.get("type") != "order" or o.get("service") not in ("ads", "members", "bot"):
+            continue
+        rows.append([{"text": f"🔁 {o['order_no']} دوباره",
+                      "callback_data": f"reorder:{o['order_no']}"}])
+    if not rows:
+        return None
+    return {"inline_keyboard": rows[-5:]}
+
+
+def send_my_orders(store, chat_id):
+    """سفارش‌های واقعی مشتری + دکمه‌ی سفارش دوباره (چت و وب‌اپ)."""
+    orders = store.list_orders(user_id=chat_id)
+    if not orders:
+        send_message(chat_id, "📦 هنوز سفارشی ثبت نکردی 🙂\n" + ORDERS_NOTICE)
+        return
+    lines = ["📦 سفارش‌های تو:\n", ORDERS_NOTICE + "\n"]
+    for o in orders:
+        lines.append(order_summary_text(o))
+        lines.append("—")
+    send_message(chat_id, "\n".join(lines),
+                 reply_markup=reorder_keyboard(orders))
+
+
+def _awaiting_receipt_order(store, chat_id):
+    """تازه‌ترین سفارش در انتظارِ بدون رسید (۲۴ ساعت اخیر)."""
+    now = time.time()
+    for o in reversed(store.list_orders(user_id=chat_id, status="pending")):
+        if o.get("paid_by_wallet") or o.get("tx_hash") or o.get("receipt_file_id"):
+            continue
+        created = _ts_value(o.get("created_at"))
+        if created and now - created <= RECEIPT_WINDOW_SEC:
+            return o
+    return None
+
+
+def attach_receipt(store, chat_id, msg):
+    """عکس فیش یا هش تراکنش را به سفارش در انتظار می‌چسباند.
+
+    همین مسیر رسیدِ عکسِ سفارش‌های وب‌اپ را هم کامل می‌کند: وب‌اپ فقط
+    نام فایل را می‌فرستد و خود عکس اینجا در چت می‌رسد.
+    """
+    text = (msg.get("text") or "").strip()
+    photo_file_id = ""
+    if msg.get("photo"):
+        photo_file_id = msg["photo"][-1]["file_id"]
+    if not photo_file_id and not _looks_like_tx_hash(text):
+        return False
+    order = _awaiting_receipt_order(store, chat_id)
+    if order is None:
+        return False
+    store.set_order_receipt(order["order_no"],
+                            tx_hash=text if _looks_like_tx_hash(text) else "",
+                            receipt_file_id=photo_file_id)
+    send_message(chat_id,
+                 f"✅ رسید سفارش {order['order_no']} دریافت شد؛ "
+                 "در انتظار تایید است. 🙏")
+    if ADMIN_CHAT_ID:
+        if photo_file_id:
+            api("sendPhoto", chat_id=ADMIN_CHAT_ID, photo=photo_file_id,
+                caption=f"📷 رسید سفارش {order['order_no']} رسید.")
+        else:
+            send_message(ADMIN_CHAT_ID,
+                         f"📎 هش تراکنش سفارش {order['order_no']} رسید:\n{text}")
+    store.save_if_dirty()
+    return True
+
+
+def check_reminders(store):
+    """یادآوری تمدید اشتراک (۳ روز مانده) و سفارش در انتظار (بیش از ۲ ساعت).
+
+    هر ۱۵ دقیقه یک بار اجرا می‌شود و هر یادآوری برای هر سفارش فقط یک بار
+    فرستاده می‌شود (order_reminders). خطا در آن هرگز حلقه را نمی‌شکند.
+    """
+    global _LAST_REMINDER_CHECK
+    now = time.time()
+    if now - _LAST_REMINDER_CHECK < REMINDER_CHECK_EVERY_SEC:
+        return
+    _LAST_REMINDER_CHECK = now
+    try:
+        # ۱) سفارش در انتظار بیش از ۲ ساعت → یادآوری به ادمین
+        if ADMIN_CHAT_ID:
+            for o in store.list_orders(status="pending"):
+                created = _ts_value(o.get("created_at"))
+                if not created or now - created < PENDING_REMIND_AFTER_SEC:
+                    continue
+                if store.has_reminder(o["order_no"], "pending_admin"):
+                    continue
+                user = store.get_user(o["user_id"])
+                send_message(ADMIN_CHAT_ID,
+                             f"⏰ سفارش {o['order_no']} بیش از ۲ ساعت است "
+                             "در انتظار تایید است.\n\n" +
+                             order_summary_text(o, user),
+                             reply_markup=order_admin_keyboard(o["order_no"]))
+                store.add_reminder(o["order_no"], "pending_admin")
+        # ۲) تمدید اشتراک ربات مدیریت، ۳ روز مانده به پایان
+        for o in store.list_orders(status="confirmed"):
+            if o.get("service") != "bot" or o.get("type") != "order":
+                continue
+            details = o.get("details") or {}
+            if (details.get("bot_type") or "management") == "custom":
+                continue
+            days = PLAN_DAYS.get(details.get("plan") or "")
+            if not days:
+                continue
+            start = _ts_value(o.get("confirmed_at")) or _ts_value(o.get("created_at"))
+            if not start:
+                continue
+            expiry = start + days * 86400
+            if expiry - RENEWAL_REMIND_BEFORE_SEC <= now < expiry:
+                if store.has_reminder(o["order_no"], "renewal"):
+                    continue
+                send_message(o["user_id"],
+                             "⏰ اشتراک ربات تلگرام (مدیریت کانال) تو ۳ روز "
+                             "دیگر تمام می‌شود.\n\n"
+                             "برای اینکه کانالت بی‌ربات نماند، از فروشگاه "
+                             "تمدیدش کن. 👇",
+                             reply_markup=shop_button_markup())
+                store.add_reminder(o["order_no"], "renewal")
+    except Exception as ex:
+        print("خطا در یادآوری‌ها:", repr(ex))
+
+
 # ---------- وب‌اپ (web_app_data) ----------
 def handle_web_app_data(store, msg):
     """پیام web_app_data را اعتبارسنجی و پردازش می‌کند.
@@ -546,6 +764,15 @@ def handle_web_app_data(store, msg):
                          f"کد معرفی تو: {code}\n"
                          f"https://t.me/{BOT_USERNAME}?start={code}\n\n"
                          + REFERRAL_LINE)
+        elif ptype == "my_orders":
+            # سفارش‌های واقعی مشتری در چت فرستاده می‌شوند؛ وب‌اپ داده‌ی
+            # واقعی ندارد و عدد نمونه نشان نمی‌دهد.
+            send_my_orders(store, chat_id)
+        elif ptype == "my_wallet":
+            balance = store.wallet_balance(chat_id)
+            send_message(chat_id,
+                         f"👛 کیف پول من\n\nموجودی: {balance} USDT\n\n"
+                         "برای شارژ، فروشگاه را باز کن و «شارژ کیف پول» را بزن.")
         else:
             send_message(chat_id, "دستور دریافتی از فروشگاه شناخته نشد.")
     except ValueError as ex:
@@ -708,12 +935,20 @@ def handle_message(store, msg):
         replied_id = msg["reply_to_message"].get("message_id")
         customer_id = store.support_customer_for(replied_id) if replied_id else None
         if customer_id:
+            # جواب ادمین به مشتری می‌رسد (پیام تلگرام)؛ دکمه‌ی فروشگاه هم
+            # همراهش است تا مشتری بتواند به مینی‌اپ برگردد. دیدن جواب
+            # «داخل» مینی‌اپ بدون سرور ممکن نیست؛ اعلان تلگرام راه آن است.
+            shop = shop_button_markup()
             if msg.get("photo"):
                 file_id = msg["photo"][-1]["file_id"]
-                api("sendPhoto", chat_id=customer_id, photo=file_id,
-                    caption=msg.get("caption") or "")
+                photo_kw = {"chat_id": customer_id, "photo": file_id,
+                            "caption": msg.get("caption") or ""}
+                if shop:
+                    photo_kw["reply_markup"] = json.dumps(shop, ensure_ascii=False)
+                api("sendPhoto", **photo_kw)
             else:
-                send_message(customer_id, msg.get("text") or "")
+                send_message(customer_id, msg.get("text") or "",
+                             reply_markup=shop)
             send_message(chat_id, "✅ جواب به مشتری فرستاده شد.")
             store.save_if_dirty()
             return
@@ -759,15 +994,7 @@ def handle_message(store, msg):
                      reply_markup=main_keyboard())
         return
     if text == "📦 سفارش‌های من":
-        orders = store.list_orders(user_id=chat_id)
-        if not orders:
-            send_message(chat_id, "هنوز سفارشی ثبت نکرده‌ای 🙂\n" + ORDERS_NOTICE)
-            return
-        lines = ["📦 سفارش‌های تو:\n", ORDERS_NOTICE + "\n"]
-        for o in orders:
-            lines.append(order_summary_text(o))
-            lines.append("—")
-        send_message(chat_id, "\n".join(lines))
+        send_my_orders(store, chat_id)
         return
     if text == "👛 کیف پول من":
         balance = store.wallet_balance(chat_id)
@@ -844,6 +1071,12 @@ def handle_message(store, msg):
         store.save_if_dirty()
         return
 
+    # رسید: عکس فیش یا هش تراکنش برای سفارش در انتظار (از وب‌اپ یا
+    # سفارش دوباره) — قبل از پاسخ متفرقه بررسی می‌شود.
+    if attach_receipt(store, chat_id, msg):
+        store.save_if_dirty()
+        return
+
     # پیام متفرقه: پاسخ خودکار (اگر تطابق داشت) وگرنه راهنمایی به منو
     if text:
         reply = store.find_auto_reply(text)
@@ -857,6 +1090,16 @@ def handle_callback(store, query):
     data = query.get("data") or ""
     chat_id = (query.get("message") or {}).get("chat", {}).get("id")
     query_id = query.get("id")
+    # سفارش دوباره مال مشتری است، نه ادمین؛ قبل از چک ادمین بررسی می‌شود.
+    if data.startswith("reorder:"):
+        order_no = data[len("reorder:"):]
+        try:
+            new_order = reorder_order(store, chat_id, order_no)
+            answer_callback(query_id, f"سفارش تازه {new_order['order_no']} ثبت شد ✅")
+        except ValueError as ex:
+            answer_callback(query_id, str(ex))
+        store.save_if_dirty()
+        return
     if not is_admin(chat_id):
         answer_callback(query_id, "فقط ادمین می‌تواند سفارش را بررسی کند.")
         return
@@ -890,6 +1133,10 @@ def run_once(store):
                 handle_callback(store, u["callback_query"])
         except Exception as ex:
             print("خطا در پردازش آپدیت:", repr(ex))
+    try:
+        check_reminders(store)
+    except Exception as ex:
+        print("خطا در یادآوری‌ها:", repr(ex))
     store.save_if_dirty()
 
 
@@ -904,6 +1151,9 @@ def main():
         raise SystemExit(1)
     if not ADMIN_CHAT_ID:
         print("هشدار: ADMIN_CHAT_ID تنظیم نشده — اقدام‌های ادمین غیرفعال‌اند")
+    else:
+        print("ادمین تنظیم شده — /start برای ادمین نسخه و دستورها را نشان می‌دهد")
+    setup_menu_button()
     store = Store()
     print("state backend:", "supabase" if store.supabase_enabled() else "file")
     store.load()
