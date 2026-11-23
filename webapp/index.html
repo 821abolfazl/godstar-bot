@@ -1,0 +1,537 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>گاد استار — خدمات تلگرام</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="app">
+
+  <!-- ======================= MAIN ======================= -->
+  <section class="screen active" id="screen-home">
+    <header class="topbar">
+      <div class="logo">
+        <span class="logo-star" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="20" height="20"><path fill="#fff" d="M12 2.5l2.6 6.2 6.7.5-5.1 4.4 1.6 6.5L12 16.6 6.2 20l1.6-6.5L2.7 9.2l6.7-.5z"/></svg>
+        </span>
+        <span class="logo-text">گاد استار</span>
+      </div>
+      <div class="wallet-pill">
+        <span class="coin" aria-hidden="true">T</span>
+        <span class="wallet-pill-text">کیف پول: <b id="wallet-balance-home">۲۰ تتر</b></span>
+        <button class="btn-charge" id="btn-charge-home" type="button">شارژ</button>
+      </div>
+    </header>
+
+    <nav class="tabs" aria-label="ناوبری اصلی">
+      <button class="tab active" data-nav="home" type="button">خدمات</button>
+      <button class="tab" data-nav="orders" type="button">سفارش‌های من</button>
+      <button class="tab" data-nav="support" type="button">پشتیبانی</button>
+    </nav>
+
+    <div class="hero">
+      <h1>رشد کانالت را<br>از اینجا شروع کن</h1>
+      <p class="hero-sub">تبلیغات، ممبر و ربات؛ همه در یک جا</p>
+      <button class="btn-dark" id="btn-hero-start" type="button">همین حالا شروع کن</button>
+    </div>
+
+    <h2 class="section-label" id="services-anchor">خدمات</h2>
+    <div class="service-list">
+      <button class="service-row" data-service="ads" type="button">
+        <span class="svc-icon tint-pink" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="22" height="22"><path fill="#EB5AA0" d="M12 2.5l2.6 6.2 6.7.5-5.1 4.4 1.6 6.5L12 16.6 6.2 20l1.6-6.5L2.7 9.2l6.7-.5z"/></svg>
+        </span>
+        <span class="svc-text"><b>تبلیغات Ads تلگرام</b><small>تبلیغ در کانال‌های تلگرام</small></span>
+        <span class="chev" aria-hidden="true">‹</span>
+      </button>
+      <button class="service-row" data-service="member" type="button">
+        <span class="svc-icon tint-blue" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="22" height="22"><path fill="#3C82C4" d="M12 12a4.5 4.5 0 1 0-4.5-4.5A4.5 4.5 0 0 0 12 12zm0 2c-3.6 0-7.5 1.8-7.5 4.2V20a1 1 0 0 0 1 1h13a1 1 0 0 0 1-1v-1.8C19.5 15.8 15.6 14 12 14z"/></svg>
+        </span>
+        <span class="svc-text"><b>خرید ممبر آپلودری</b><small>۱۰۰۰ تا ۲۰٬۰۰۰ ممبر</small></span>
+        <span class="chev" aria-hidden="true">‹</span>
+      </button>
+      <button class="service-row" data-service="bot" type="button">
+        <span class="svc-icon tint-green" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="22" height="22"><path fill="#46A064" d="M12 2a1 1 0 0 1 1 1v1.1a6 6 0 0 1 4.6 5.9v5.5a3 3 0 0 1-3 3h-.6v2.3a1 1 0 1 1-2 0v-2.3h-2v2.3a1 1 0 1 1-2 0v-2.3h-.6a3 3 0 0 1-3-3V10A6 6 0 0 1 9 4.1V3a1 1 0 0 1 1-1zm-3.5 8.5a1.5 1.5 0 1 0 1.5 1.5 1.5 1.5 0 0 0-1.5-1.5zm7 0a1.5 1.5 0 1 0 1.5 1.5 1.5 1.5 0 0 0-1.5-1.5zM8 15.5h8a.5.5 0 0 0 .5-.5v-1h-9v1a.5.5 0 0 0 .5.5z"/></svg>
+        </span>
+        <span class="svc-text"><b>ربات تلگرام</b><small>مدیریت کانال و ربات اختصاصی</small></span>
+        <span class="chev" aria-hidden="true">‹</span>
+      </button>
+    </div>
+
+    <div class="card referral-card">
+      <h3>کد معرفی من</h3>
+      <p>وقتی دوستت با کدت سفارش بدهد، هر دو ۱۰٪ تخفیف می‌گیرید.</p>
+      <div class="referral-code-row">
+        <span class="referral-code" id="referral-code">GOD4821</span>
+        <button class="link-pink" id="btn-share-referral" type="button">اشتراک‌گذاری</button>
+      </div>
+      <hr class="divider">
+      <div id="friends-list"></div>
+      <p class="referral-rule">هر کد دعوت برای هر نفر فقط یک بار قابل استفاده است.</p>
+    </div>
+
+    <div class="support-block">
+      <h3>سوال داری؟</h3>
+      <p>درصورت نیاز به راهنمایی و مشاوره با پشتیبانی در ارتباط باشید</p>
+      <button class="link-pink" data-nav="support" type="button">ارتباط با پشتیبانی</button>
+    </div>
+
+    <div class="trust-row">
+      <div class="trust-item"><span class="dot-green" aria-hidden="true"></span>پشتیبانی ۲۴ ساعته</div>
+      <div class="trust-item">
+        <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="#3C82C4" d="M12 2l8 3v6c0 5-3.5 9.3-8 11-4.5-1.7-8-6-8-11V5zm-1.2 14.6l5.2-5.2-1.4-1.4-3.8 3.8-1.8-1.8-1.4 1.4z"/></svg>
+        پرداخت امن با تتر
+      </div>
+      <div class="trust-item">
+        <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="#E8823C" d="M20.5 3.5c-4 0-8.5 1.5-11 4.5L4 13.5V20h6.5l5.5-5.5c3-2.5 4.5-7 4.5-11zM6.5 17.5h-2v-2l8.5-8.5c.8-.8 1.7-1.5 2.7-2L7 13.7z"/></svg>
+        تحویل سریع
+      </div>
+    </div>
+    <p class="pay-note">پرداخت فقط با تتر (BEP20)</p>
+  </section>
+
+  <!-- ======================= ADS ======================= -->
+  <section class="screen" id="screen-ads">
+    <header class="subhead">
+      <button class="back-btn" data-back type="button" aria-label="بازگشت">›</button>
+      <div><h2>تبلیغات Ads تلگرام</h2><p>انتخاب بازدید و رسانه</p></div>
+    </header>
+
+    <div class="card service-summary">
+      <span class="svc-icon tint-pink" aria-hidden="true"><svg viewBox="0 0 24 24" width="22" height="22"><path fill="#EB5AA0" d="M12 2.5l2.6 6.2 6.7.5-5.1 4.4 1.6 6.5L12 16.6 6.2 20l1.6-6.5L2.7 9.2l6.7-.5z"/></svg></span>
+      <div><b>تبلیغات Ads تلگرام</b><small>تبلیغ در کانال‌های تلگرام</small></div>
+    </div>
+
+    <h3 class="block-title">چرا تبلیغات ما؟</h3>
+    <div class="card trust-list">
+      <div class="trust-line"><span class="check" aria-hidden="true">✓</span><div><b>هدف‌گیری دقیق</b><small>تبلیغت فقط در کانال‌های مرتبط با موضوع تو دیده می‌شود</small></div></div>
+      <div class="trust-line"><span class="check" aria-hidden="true">✓</span><div><b>بازدید از کاربران واقعی</b><small>تبلیغ از طریق پلتفرم رسمی تلگرام اجرا می‌شود</small></div></div>
+      <div class="trust-line"><span class="check" aria-hidden="true">✓</span><div><b>گزارش نتیجه</b><small>تعداد بازدید و عملکرد تبلیغ را می‌بینی</small></div></div>
+      <div class="trust-line"><span class="check" aria-hidden="true">✓</span><div><b>بدون دردسر</b><small>متن و کانالت را بده؛ ساخت و اجرای کمپین با ما</small></div></div>
+    </div>
+
+    <h3 class="block-title">تعداد بازدید</h3>
+    <div class="stepper">
+      <button type="button" id="ads-minus" aria-label="کمتر">−</button>
+      <span id="ads-views-label">۵۰٬۰۰۰ بازدید</span>
+      <button type="button" id="ads-plus" aria-label="بیشتر">+</button>
+    </div>
+    <input type="range" id="ads-slider" min="10000" max="1000000" step="10000" value="50000" aria-label="تعداد بازدید">
+    <div class="range-ends"><span>۱۰٬۰۰۰</span><span>۱٬۰۰۰٬۰۰۰</span></div>
+    <div class="pills" id="ads-pills">
+      <button type="button" data-v="10000">۱۰٬۰۰۰</button>
+      <button type="button" data-v="50000" class="active">۵۰٬۰۰۰</button>
+      <button type="button" data-v="100000">۱۰۰٬۰۰۰</button>
+      <button type="button" data-v="1000000">۱٬۰۰۰٬۰۰۰</button>
+    </div>
+
+    <h3 class="block-title">رسانه‌ی تبلیغ</h3>
+    <div class="radios" id="ads-media">
+      <label class="radio-card"><input type="radio" name="ads-media" value="none" checked><span class="radio-dot"></span><span class="radio-text"><b>بدون عکس و فیلم</b><small>۵ تتر به ازای هر ۱۰٬۰۰۰ بازدید</small></span></label>
+      <label class="radio-card"><input type="radio" name="ads-media" value="photo"><span class="radio-dot"></span><span class="radio-text"><b>با عکس</b><small>۶ تتر به ازای هر ۱۰٬۰۰۰ بازدید</small></span></label>
+      <label class="radio-card"><input type="radio" name="ads-media" value="video"><span class="radio-dot"></span><span class="radio-text"><b>با فیلم</b><small>۷ تتر به ازای هر ۱۰٬۰۰۰ بازدید</small></span></label>
+    </div>
+
+    <label class="field-label" for="ads-text">متن تبلیغ <span class="req">*</span></label>
+    <textarea id="ads-text" rows="3" placeholder="متن تبلیغ را بنویس..."></textarea>
+    <span class="req-tag">اجباری</span>
+
+    <label class="field-label" for="ads-channel">آیدی کانال <span class="req">*</span></label>
+    <input type="text" id="ads-channel" placeholder="مثال: @GodNews24" dir="ltr" class="ltr-input">
+    <span class="req-tag">اجباری</span>
+    <p class="field-hint">آیدی‌های ذخیره‌شده</p>
+    <div class="chips" data-chips-for="ads-channel">
+      <button type="button" class="chip" data-id="@GodNews24">@GodNews24</button>
+      <button type="button" class="chip" data-id="@NewsChannel">@NewsChannel</button>
+    </div>
+
+    <label class="field-label" for="ads-targets">کانال‌های هدف (اختیاری)</label>
+    <p class="field-explain">کانال‌هایی که می‌خواهی تبلیغت فقط در آن‌ها دیده شود؛ مثلاً اگر کانالت ورزشی است، کانال‌های ورزشی را بنویس تا تبلیغ به مخاطب درست برسد.</p>
+    <textarea id="ads-targets" rows="2" placeholder="@news1 @news2" dir="ltr" class="ltr-input"></textarea>
+    <p class="field-note">اگر خالی بماند، تبلیغ در کانال‌های مرتبط نمایش داده می‌شود.</p>
+
+    <div id="ads-upload-wrap" class="hidden">
+      <h3 class="block-title" id="ads-upload-title">آپلود عکس تبلیغ</h3>
+      <label class="upload-box" for="ads-media-file">
+        <span class="upload-plus" aria-hidden="true">+</span>
+        <span id="ads-upload-label">عکس تبلیغ را برای بارگذاری انتخاب کن</span>
+        <img id="ads-upload-preview" class="upload-preview hidden" alt="">
+      </label>
+      <input type="file" id="ads-media-file" accept="image/*,video/*" class="hidden-input">
+    </div>
+
+    <div class="card price-box">
+      <div><span class="price-label">قیمت نهایی</span><span class="price-detail" id="ads-price-detail">۵۰٬۰۰۰ بازدید × ۵ تتر — بدون عکس و فیلم</span></div>
+      <b class="price-value" id="ads-price">۲۵ تتر</b>
+    </div>
+
+    <button class="btn-order" id="ads-order" type="button" disabled>ثبت سفارش — <span id="ads-order-price">۲۵ تتر</span></button>
+    <p class="disabled-note" id="ads-note">برای ثبت سفارش، همه‌ی بخش‌های اجباری را کامل کن</p>
+    <div class="support-block">
+      <h3>سوال داری؟</h3>
+      <p>درصورت نیاز به راهنمایی و مشاوره با پشتیبانی در ارتباط باشید</p>
+      <button class="link-pink" data-nav="support" type="button">ارتباط با پشتیبانی</button>
+    </div>
+    <p class="pay-note">پرداخت فقط با تتر (BEP20)</p>
+  </section>
+
+  <!-- ======================= MEMBER ======================= -->
+  <section class="screen" id="screen-member">
+    <header class="subhead">
+      <button class="back-btn" data-back type="button" aria-label="بازگشت">›</button>
+      <div><h2>خرید ممبر آپلودری</h2><p>انتخاب تعداد ممبر</p></div>
+    </header>
+
+    <div class="card service-summary">
+      <span class="svc-icon tint-blue" aria-hidden="true"><svg viewBox="0 0 24 24" width="22" height="22"><path fill="#3C82C4" d="M12 12a4.5 4.5 0 1 0-4.5-4.5A4.5 4.5 0 0 0 12 12zm0 2c-3.6 0-7.5 1.8-7.5 4.2V20a1 1 0 0 0 1 1h13a1 1 0 0 0 1-1v-1.8C19.5 15.8 15.6 14 12 14z"/></svg></span>
+      <div><b>ممبر آپلودری</b><small>برای کانال یا گروه تلگرام</small></div>
+    </div>
+
+    <div class="notice-box gold">
+      <span class="notice-ico gold-ico" aria-hidden="true">!</span>
+      <span>برای کانال‌های غیراخلاقی سفارش انجام نمی‌شود.</span>
+    </div>
+    <div class="notice-box green">
+      <span class="notice-ico green-ico" aria-hidden="true">✓</span>
+      <span>ممبرها کاملاً از منابع اخلاقی تأمین می‌شوند.</span>
+    </div>
+
+    <h3 class="block-title">چرا ممبر ما؟</h3>
+    <div class="card trust-list">
+      <div class="trust-line"><span class="check" aria-hidden="true">✓</span><div><b>تحویل سریع</b><small>سفارشت سریع انجام می‌شود</small></div></div>
+      <div class="trust-line"><span class="check" aria-hidden="true">✓</span><div><b>قیمت شفاف</b><small>هر ۱٬۰۰۰ ممبر فقط ۳ تتر؛ بدون هزینه‌ی پنهان</small></div></div>
+      <div class="trust-line"><span class="check" aria-hidden="true">✓</span><div><b>هر تعدادی که بخواهی</b><small>از ۱٬۰۰۰ تا ۲۰٬۰۰۰ ممبر در یک سفارش</small></div></div>
+      <div class="trust-line"><span class="check" aria-hidden="true">✓</span><div><b>پشتیبانی تا پایان سفارش</b><small>تا وقتی سفارشت کامل شود، پشتیبانی کنارت است</small></div></div>
+    </div>
+
+    <h3 class="block-title">تعداد ممبر</h3>
+    <div class="stepper">
+      <button type="button" id="member-minus" aria-label="کمتر">−</button>
+      <span id="member-count-label">۵٬۰۰۰ ممبر</span>
+      <button type="button" id="member-plus" aria-label="بیشتر">+</button>
+    </div>
+    <input type="range" id="member-slider" min="1000" max="20000" step="1000" value="5000" aria-label="تعداد ممبر">
+    <div class="range-ends"><span>۱٬۰۰۰</span><span>۲۰٬۰۰۰</span></div>
+    <div class="pills" id="member-pills">
+      <button type="button" data-v="1000">۱٬۰۰۰</button>
+      <button type="button" data-v="5000" class="active">۵٬۰۰۰</button>
+      <button type="button" data-v="10000">۱۰٬۰۰۰</button>
+      <button type="button" data-v="20000">۲۰٬۰۰۰</button>
+    </div>
+    <p class="field-note center">برای بیش از ۲۰٬۰۰۰ ممبر، با پشتیبانی در ارتباط باشید</p>
+
+    <div class="card price-box">
+      <div><span class="price-label">قیمت نهایی</span><span class="price-detail">۳ تتر به ازای هر ۱۰۰۰ ممبر</span></div>
+      <b class="price-value" id="member-price">۱۵ تتر</b>
+    </div>
+
+    <label class="field-label" for="member-channel">آیدی کانال <span class="req">*</span></label>
+    <input type="text" id="member-channel" placeholder="مثال: @GodNews24" dir="ltr" class="ltr-input">
+    <span class="req-tag">اجباری</span>
+    <p class="field-hint">آیدی‌های ذخیره‌شده</p>
+    <div class="chips" data-chips-for="member-channel">
+      <button type="button" class="chip" data-id="@GodNews24">@GodNews24</button>
+      <button type="button" class="chip" data-id="@NewsChannel">@NewsChannel</button>
+    </div>
+
+    <button class="btn-order" id="member-order" type="button" disabled>ثبت سفارش — <span id="member-order-price">۱۵ تتر</span></button>
+    <p class="disabled-note" id="member-note">برای ثبت سفارش، آیدی کانال را وارد کن</p>
+    <div class="support-block">
+      <h3>سوال داری؟</h3>
+      <p>درصورت نیاز به راهنمایی و مشاوره با پشتیبانی در ارتباط باشید</p>
+      <button class="link-pink" data-nav="support" type="button">ارتباط با پشتیبانی</button>
+    </div>
+    <p class="pay-note">پرداخت فقط با تتر (BEP20)</p>
+  </section>
+
+  <!-- ======================= BOT ======================= -->
+  <section class="screen" id="screen-bot">
+    <header class="subhead">
+      <button class="back-btn" data-back type="button" aria-label="بازگشت">›</button>
+      <div><h2>ربات تلگرام</h2><p>انتخاب نوع ربات و اشتراک</p></div>
+    </header>
+
+    <div class="card service-summary">
+      <span class="svc-icon tint-green" aria-hidden="true"><svg viewBox="0 0 24 24" width="22" height="22"><path fill="#46A064" d="M12 2a1 1 0 0 1 1 1v1.1a6 6 0 0 1 4.6 5.9v5.5a3 3 0 0 1-3 3h-.6v2.3a1 1 0 1 1-2 0v-2.3h-2v2.3a1 1 0 1 1-2 0v-2.3h-.6a3 3 0 0 1-3-3V10A6 6 0 0 1 9 4.1V3a1 1 0 0 1 1-1zm-3.5 8.5a1.5 1.5 0 1 0 1.5 1.5 1.5 1.5 0 0 0-1.5-1.5zm7 0a1.5 1.5 0 1 0 1.5 1.5 1.5 1.5 0 0 0-1.5-1.5zM8 15.5h8a.5.5 0 0 0 .5-.5v-1h-9v1a.5.5 0 0 0 .5.5z"/></svg></span>
+      <div><b>ربات تلگرام</b><small>مدیریت کانال و ربات اختصاصی</small></div>
+    </div>
+
+    <div class="notice-box gold">
+      <span class="notice-ico gold-ico" aria-hidden="true">!</span>
+      <span>قبل از ثبت سفارش، برای راهنمایی و مشاوره با پشتیبانی در ارتباط باشید.</span>
+    </div>
+
+    <h3 class="block-title">چرا ربات ما؟</h3>
+    <div class="card trust-list">
+      <div class="trust-line"><span class="check" aria-hidden="true">✓</span><div><b>ساخته‌شده مخصوص کانال تو</b><small>ربات دقیقاً برای کانال تو ساخته و تنظیم می‌شود</small></div></div>
+      <div class="trust-line"><span class="check" aria-hidden="true">✓</span><div><b>مدیریت کامل کانال</b><small>پست، قوانین و مدیریت اعضا، همه داخل خود ربات</small></div></div>
+      <div class="trust-line"><span class="check" aria-hidden="true">✓</span><div><b>پشتیبانی ۲۴ ساعته</b><small>هر وقت سوالی داشتی، پشتیبانی کنارت است</small></div></div>
+      <div class="trust-line"><span class="check" aria-hidden="true">✓</span><div><b>تحویل سریع، بدون دردسر</b><small>ربات آماده تحویل داده می‌شود؛ فقط استفاده کن</small></div></div>
+    </div>
+
+    <h3 class="block-title">نوع ربات</h3>
+    <div class="radios" id="bot-type">
+      <label class="radio-card"><input type="radio" name="bot-type" value="management" checked><span class="radio-dot"></span><span class="radio-text"><b>ربات مدیریت کانال</b><small>مدیریت کامل کانال، پشتیبانی ۲۴ ساعته</small></span></label>
+      <label class="radio-card"><input type="radio" name="bot-type" value="custom"><span class="radio-dot"></span><span class="radio-text"><b>ربات اختصاصی تو</b><small>هر رباتی که بخواهی؛ قیمت توافقی پس از بررسی</small></span></label>
+    </div>
+
+    <div id="bot-plans-wrap">
+      <h3 class="block-title">مدت اشتراک</h3>
+      <div class="radios" id="bot-plans">
+        <label class="radio-card"><input type="radio" name="bot-plan" value="1" checked><span class="radio-dot"></span><span class="radio-text"><b>۱ ماهه</b><small>قیمت پایه</small></span><b class="radio-price">۱۰ تتر</b></label>
+        <label class="radio-card"><input type="radio" name="bot-plan" value="3"><span class="radio-dot"></span><span class="radio-text"><b>۳ ماهه</b><small class="save">۲ تتر تخفیف</small></span><b class="radio-price">۲۸ تتر</b></label>
+        <label class="radio-card"><input type="radio" name="bot-plan" value="6"><span class="radio-dot"></span><span class="radio-text"><b>۶ ماهه</b><small class="save">۶ تتر تخفیف</small></span><b class="radio-price">۵۴ تتر</b></label>
+        <label class="radio-card"><input type="radio" name="bot-plan" value="12"><span class="radio-dot"></span><span class="radio-text"><b>۱۲ ماهه</b><small class="save">۲۰ تتر تخفیف</small></span><b class="radio-price">۱۰۰ تتر</b></label>
+      </div>
+    </div>
+
+    <div id="bot-custom-wrap" class="hidden">
+      <div class="notice-box pink">
+        <span class="notice-ico pink-ico" aria-hidden="true">★</span>
+        <span>ربات اختصاصی بعد از بررسی درخواستت قیمت‌گذاری می‌شود؛ قیمت توافقی است و پس از تایید پشتیبانی مشخص می‌شود.</span>
+      </div>
+    </div>
+
+    <label class="field-label" for="bot-channel">آیدی کانال <span class="req">*</span></label>
+    <input type="text" id="bot-channel" placeholder="مثال: @GodNews24" dir="ltr" class="ltr-input">
+    <span class="req-tag">اجباری</span>
+    <p class="field-hint">آیدی‌های ذخیره‌شده</p>
+    <div class="chips" data-chips-for="bot-channel">
+      <button type="button" class="chip" data-id="@GodNews24">@GodNews24</button>
+      <button type="button" class="chip" data-id="@NewsChannel">@NewsChannel</button>
+    </div>
+
+    <label class="field-label" for="bot-notes">توضیحات (اختیاری)</label>
+    <textarea id="bot-notes" rows="3" placeholder="هر چیزی که نیاز داری بنویس..."></textarea>
+
+    <div class="card price-box" id="bot-price-box">
+      <div><span class="price-label">قیمت نهایی</span><span class="price-detail" id="bot-price-detail">اشتراک ۱ ماهه — ربات مدیریت کانال</span></div>
+      <b class="price-value" id="bot-price">۱۰ تتر</b>
+    </div>
+
+    <button class="btn-order" id="bot-order" type="button" disabled>ثبت سفارش — <span id="bot-order-price">۱۰ تتر</span></button>
+    <p class="disabled-note" id="bot-note">برای ثبت سفارش، آیدی کانال را وارد کن</p>
+    <div class="support-block">
+      <h3>سوال داری؟</h3>
+      <p>درصورت نیاز به راهنمایی و مشاوره با پشتیبانی در ارتباط باشید</p>
+      <button class="link-pink" data-nav="support" type="button">ارتباط با پشتیبانی</button>
+    </div>
+    <p class="pay-note">پرداخت فقط با تتر (BEP20)</p>
+  </section>
+
+  <!-- ======================= PAYMENT ======================= -->
+  <section class="screen" id="screen-payment">
+    <header class="subhead">
+      <button class="back-btn" data-back type="button" aria-label="بازگشت">›</button>
+      <div><h2>پرداخت</h2><p>تکمیل سفارش و ارسال رسید</p></div>
+    </header>
+
+    <div class="card summary-box">
+      <b id="pay-title">خرید ممبر آپلودری</b>
+      <small id="pay-sub">۵٬۰۰۰ ممبر — GodNews24</small>
+      <hr class="divider">
+      <div class="sum-row"><span>مبلغ سفارش:</span><b id="pay-amount">۱۵ تتر</b></div>
+      <div class="sum-row"><span id="pay-discount-label">تخفیف با کد GOD10:</span><b class="green-text" id="pay-discount">۱٫۵ تتر−</b></div>
+      <div class="sum-row total"><span>قابل پرداخت:</span><b class="pink-text" id="pay-payable">۱۳٫۵ تتر</b></div>
+    </div>
+
+    <label class="field-label" for="discount-code">کد تخفیف</label>
+    <div class="discount-row">
+      <input type="text" id="discount-code" placeholder="کد تخفیف را وارد کن" dir="ltr" class="ltr-input">
+      <span class="chip-applied hidden" id="discount-applied">اعمال شد</span>
+    </div>
+    <p class="field-note hidden" id="discount-invalid">این کد معتبر نیست.</p>
+
+    <div class="card wallet-card">
+      <div><b>کیف پول من</b><small>موجودی: <span id="wallet-balance-pay">۲۰ تتر</span></small></div>
+      <button class="link-pink" id="btn-charge-pay" type="button">شارژ کیف پول</button>
+    </div>
+    <p class="field-note">می‌توانی با موجودی کیف پول هم پرداخت کنی.</p>
+    <label class="wallet-pay-row">
+      <input type="checkbox" id="pay-from-wallet">
+      <span>پرداخت از کیف پول (<span id="wallet-balance-check">۲۰ تتر</span> موجودی)</span>
+    </label>
+
+    <p class="field-hint">آدرس کیف پول (BEP20)</p>
+    <div class="address-box">
+      <span class="address-text" dir="ltr">0x747f4B72a967fC504a77Ba38a681939dDeB6F793</span>
+      <button class="link-pink" type="button" data-copy="0x747f4B72a967fC504a77Ba38a681939dDeB6F793">کپی</button>
+    </div>
+    <p class="field-note">فقط تتر (USDT) روی شبکه‌ی BEP20 ارسال کنید.</p>
+
+    <h3 class="block-title">ارسال رسید</h3>
+    <div class="radios" id="pay-receipt">
+      <label class="radio-card"><input type="radio" name="pay-receipt" value="photo" checked><span class="radio-dot"></span><span class="radio-text"><b>عکس فیش پرداخت</b><small>عکس رسید پرداخت را بارگذاری کن</small></span></label>
+      <label class="radio-card"><input type="radio" name="pay-receipt" value="hash"><span class="radio-dot"></span><span class="radio-text"><b>کد هش تراکنش</b><small>هش تراکنش را وارد کن</small></span></label>
+    </div>
+
+    <div id="pay-upload-wrap">
+      <label class="upload-box" for="pay-receipt-file">
+        <span class="upload-plus" aria-hidden="true">+</span>
+        <span id="pay-upload-label">عکس فیش را برای بارگذاری انتخاب کن</span>
+        <img id="pay-upload-preview" class="upload-preview hidden" alt="">
+      </label>
+      <input type="file" id="pay-receipt-file" accept="image/*" class="hidden-input">
+    </div>
+    <div id="pay-hash-wrap" class="hidden">
+      <input type="text" id="pay-hash" placeholder="0x..." dir="ltr" class="ltr-input">
+    </div>
+
+    <button class="btn-order" id="pay-submit" type="button" disabled>ثبت نهایی سفارش — <span id="pay-submit-price">۱۳٫۵ تتر</span></button>
+    <p class="disabled-note" id="pay-note">برای ثبت نهایی، رسید یا کد هش را ارسال کن</p>
+    <div class="support-block">
+      <h3>سوال داری؟</h3>
+      <p>درصورت نیاز به راهنمایی و مشاوره با پشتیبانی در ارتباط باشید</p>
+      <button class="link-pink" data-nav="support" type="button">ارتباط با پشتیبانی</button>
+    </div>
+    <p class="pay-note">پرداخت فقط با تتر (BEP20)</p>
+  </section>
+
+  <!-- ======================= WALLET CHARGE ======================= -->
+  <section class="screen" id="screen-wallet">
+    <header class="subhead">
+      <button class="back-btn" data-back type="button" aria-label="بازگشت">›</button>
+      <div><h2>شارژ کیف پول</h2><p>موجودی فعلی: <span id="wallet-balance-wallet">۲۰ تتر</span></p></div>
+    </header>
+
+    <h3 class="block-title">مبلغ شارژ</h3>
+    <div class="pills pills-4" id="wallet-pills">
+      <button type="button" data-v="10">۱۰ تتر</button>
+      <button type="button" data-v="20" class="active">۲۰ تتر</button>
+      <button type="button" data-v="50">۵۰ تتر</button>
+      <button type="button" data-v="100">۱۰۰ تتر</button>
+    </div>
+    <input type="number" id="wallet-custom" min="1" placeholder="مبلغ دلخواه را وارد کن (تتر)">
+
+    <div class="sum-row wallet-sum"><span>مبلغ شارژ:</span><b class="pink-text" id="wallet-amount-label">۲۰ تتر</b></div>
+
+    <p class="field-hint">آدرس کیف پول (BEP20)</p>
+    <div class="address-box">
+      <span class="address-text" dir="ltr">0x747f4B72a967fC504a77Ba38a681939dDeB6F793</span>
+      <button class="link-pink" type="button" data-copy="0x747f4B72a967fC504a77Ba38a681939dDeB6F793">کپی</button>
+    </div>
+    <p class="field-note">فقط تتر (USDT) روی شبکه‌ی BEP20 ارسال کنید.</p>
+
+    <h3 class="block-title">ارسال رسید</h3>
+    <div class="radios" id="wallet-receipt">
+      <label class="radio-card"><input type="radio" name="wallet-receipt" value="photo" checked><span class="radio-dot"></span><span class="radio-text"><b>عکس فیش پرداخت</b><small>عکس رسید پرداخت را بارگذاری کن</small></span></label>
+      <label class="radio-card"><input type="radio" name="wallet-receipt" value="hash"><span class="radio-dot"></span><span class="radio-text"><b>کد هش تراکنش</b><small>هش تراکنش را وارد کن</small></span></label>
+    </div>
+
+    <div id="wallet-upload-wrap">
+      <label class="upload-box" for="wallet-receipt-file">
+        <span class="upload-plus" aria-hidden="true">+</span>
+        <span id="wallet-upload-label">عکس فیش را برای بارگذاری انتخاب کن</span>
+        <img id="wallet-upload-preview" class="upload-preview hidden" alt="">
+      </label>
+      <input type="file" id="wallet-receipt-file" accept="image/*" class="hidden-input">
+    </div>
+    <div id="wallet-hash-wrap" class="hidden">
+      <input type="text" id="wallet-hash" placeholder="0x..." dir="ltr" class="ltr-input">
+    </div>
+
+    <button class="btn-order" id="wallet-submit" type="button" disabled>ثبت شارژ — <span id="wallet-submit-price">۲۰ تتر</span></button>
+    <p class="disabled-note" id="wallet-note">برای ثبت شارژ، رسید یا کد هش را ارسال کن</p>
+    <div class="support-block">
+      <h3>سوال داری؟</h3>
+      <p>درصورت نیاز به راهنمایی و مشاوره با پشتیبانی در ارتباط باشید</p>
+      <button class="link-pink" data-nav="support" type="button">ارتباط با پشتیبانی</button>
+    </div>
+    <p class="pay-note">پرداخت فقط با تتر (BEP20)</p>
+  </section>
+
+  <!-- ======================= ORDERS ======================= -->
+  <section class="screen" id="screen-orders">
+    <header class="subhead">
+      <button class="back-btn" data-back type="button" aria-label="بازگشت">›</button>
+      <div><h2>سفارش‌های من</h2><p>پیگیری سفارش‌ها و تمدید اشتراک</p></div>
+    </header>
+
+    <div class="notice-box green">
+      <span class="notice-ico green-ico" aria-hidden="true">✓</span>
+      <span>هر تغییری در وضعیت سفارشت، با پیام بهت خبر داده می‌شود.</span>
+    </div>
+
+    <div id="orders-list"></div>
+
+    <div class="card loyalty-card">
+      <div class="loyalty-head"><b>تخفیف وفاداری</b><span class="amber-text">۲ از ۳ سفارش</span></div>
+      <p>بعد از ۳ سفارش، ۱۰٪ تخفیف می‌گیری</p>
+      <div class="progress"><span style="width:66%"></span></div>
+    </div>
+
+    <div class="support-block">
+      <h3>سوال داری؟</h3>
+      <p>درصورت نیاز به راهنمایی و مشاوره با پشتیبانی در ارتباط باشید</p>
+      <button class="link-pink" data-nav="support" type="button">ارتباط با پشتیبانی</button>
+    </div>
+    <p class="pay-note">پرداخت فقط با تتر (BEP20)</p>
+  </section>
+
+  <!-- ======================= SUPPORT ======================= -->
+  <section class="screen" id="screen-support">
+    <header class="subhead">
+      <button class="back-btn" data-back type="button" aria-label="بازگشت">›</button>
+      <div><h2>پشتیبانی</h2><p><span class="dot-green inline-dot" aria-hidden="true"></span>آنلاین — معمولاً در کمتر از یک ساعت جواب می‌دهیم</p></div>
+    </header>
+
+    <h3 class="block-title">سوال‌های پرتکرار</h3>
+    <div class="card faq-list" id="faq-list">
+      <div class="faq-item open">
+        <button class="faq-q" type="button"><span class="q-ico" aria-hidden="true">؟</span><b>سفارشم کی آماده می‌شه؟</b><span class="chev">‹</span></button>
+        <p class="faq-a">سفارش‌های ممبر و تبلیغات معمولاً تا ۲۴ ساعت بعد از تایید پرداخت انجام می‌شوند و نتیجه‌اش را با پیام بهت خبر می‌دهیم.</p>
+      </div>
+      <div class="faq-item">
+        <button class="faq-q" type="button"><span class="q-ico" aria-hidden="true">؟</span><b>چطور پرداخت کنم؟</b><span class="chev">‹</span></button>
+        <p class="faq-a">فقط با تتر (USDT) روی شبکه‌ی BEP20 به آدرسی که در صفحه‌ی پرداخت می‌بینی واریز کن و بعد عکس فیش یا کد هش تراکنش را همان‌جا ارسال کن.</p>
+      </div>
+      <div class="faq-item">
+        <button class="faq-q" type="button"><span class="q-ico" aria-hidden="true">؟</span><b>اگر سفارشم انجام نشد چه کار کنم؟</b><span class="chev">‹</span></button>
+        <p class="faq-a">نگران نباش؛ همین‌جا پیام بده یا با مدیریت در ارتباط باش تا وضعیت سفارشت را بررسی کنیم و اگر انجام نشد، مبلغ را برمی‌گردانیم.</p>
+      </div>
+    </div>
+
+    <h3 class="block-title">گفتگو با پشتیبانی</h3>
+    <div class="chat" id="chat-box"></div>
+
+    <button class="card contact-admin" id="btn-contact-admin" type="button">
+      <span class="svc-icon tint-pink" aria-hidden="true"><svg viewBox="0 0 24 24" width="22" height="22"><path fill="#EB5AA0" d="M12 12a4.5 4.5 0 1 0-4.5-4.5A4.5 4.5 0 0 0 12 12zm0 2c-3.6 0-7.5 1.8-7.5 4.2V20a1 1 0 0 0 1 1h13a1 1 0 0 0 1-1v-1.8C19.5 15.8 15.6 14 12 14z"/></svg></span>
+      <span class="svc-text"><b>ارتباط با مدیریت</b><small>پیام مستقیم به مدیریت گاد استار</small></span>
+      <span class="chev" aria-hidden="true">‹</span>
+    </button>
+
+    <div class="chat-input-bar">
+      <button class="attach-btn" id="btn-attach" type="button" aria-label="ارسال عکس">
+        <svg viewBox="0 0 24 24" width="20" height="20"><path fill="#EB5AA0" d="M4 5h16a1 1 0 0 1 1 1v12a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1zm3 4a2 2 0 1 0 0-4 2 2 0 0 0 0 4zm-2 7.2l3.5-3.5 3 3L16 11l5 5v1H5z"/></svg>
+      </button>
+      <input type="file" id="support-photo" accept="image/*" class="hidden-input">
+      <input type="text" id="support-input" placeholder="پیامت را بنویس..." autocomplete="off">
+      <button class="send-btn" id="btn-send-support" type="button" aria-label="ارسال">
+        <svg viewBox="0 0 24 24" width="18" height="18"><path fill="#fff" d="M3 11l18-8-8 18-2.5-7.5z"/></svg>
+      </button>
+    </div>
+    <p class="field-note center" id="support-photo-note"></p>
+  </section>
+
+  <!-- ======================= SUCCESS ======================= -->
+  <section class="screen" id="screen-success">
+    <div class="success-wrap">
+      <span class="success-check" aria-hidden="true">✓</span>
+      <h2>سفارش شما ثبت شد</h2>
+      <p class="success-order">شماره‌ی سفارش: <b dir="ltr" id="success-order-no">GS-000000</b></p>
+      <span class="chip-status amber">در انتظار تایید</span>
+      <p class="success-note" id="success-note">نتیجه‌ی بررسی پرداخت را با پیام بهت خبر می‌دهیم.</p>
+      <button class="btn-order" id="btn-success-orders" type="button">مشاهده سفارش‌های من</button>
+      <button class="link-pink" id="btn-success-home" type="button">بازگشت به صفحه‌ی اصلی</button>
+    </div>
+  </section>
+
+</div>
+<script src="app.js"></script>
+</body>
+</html>
