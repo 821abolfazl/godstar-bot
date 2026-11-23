@@ -87,6 +87,20 @@ create table if not exists auto_replies (
   answer text not null
 );
 
+-- یادآوری‌های ثبت‌شده‌ی سفارش‌ها (هر سفارش + نوع، فقط یک بار):
+-- kind = 'pending_admin' (سفارش بیش از ۲ ساعت در انتظار تایید)
+--      | 'renewal' (یادآوری تمدید اشتراک، ۳ روز مانده به پایان)
+create table if not exists order_reminders (
+  order_no text not null,
+  kind text not null,
+  created_at timestamptz not null default now(),
+  primary key (order_no, kind)
+);
+
+-- شروع اشتراک از لحظه‌ی تایید ادمین است، نه ثبت سفارش
+alter table public.orders
+  add column if not exists confirmed_at timestamptz;
+
 -- پاسخ‌های خودکار پیش‌فرض
 insert into auto_replies (question, answer) values
   ('سفارشم کی آماده می‌شه؟',
@@ -110,4 +124,5 @@ grant select, insert, update, delete on public.discount_codes to service_role;
 grant select, insert, update, delete on public.referrals to service_role;
 grant select, insert, update, delete on public.support_threads to service_role;
 grant select, insert, update, delete on public.auto_replies to service_role;
+grant select, insert, update, delete on public.order_reminders to service_role;
 grant usage, select on all sequences in schema public to service_role;
