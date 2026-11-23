@@ -30,7 +30,7 @@ from pricing import (WALLET_ADDRESS, ads_price, member_price, bot_price,
                      compute_order_price, loyalty_eligible,
                      is_valid_channel_id, is_valid_referral_code)
 
-BOT_VERSION = "2026-11-23-0.2"   # فقط توی لاگ و برای ادمین در /start نوشته می‌شه
+BOT_VERSION = "2026-11-23-0.3"   # فقط توی لاگ و برای ادمین در /start نوشته می‌شه
 BOT_USERNAME = "GodStarServiceBot"
 WEBAPP_URL = os.environ.get("WEBAPP_URL") or "https://821abolfazl.github.io/godstar/"
 
@@ -89,6 +89,14 @@ def api_get_updates(offset):
         return []
     if not data.get("ok"):
         print("getUpdates failed:", str(data)[:120])
+        if data.get("error_code") == 429:
+            # تلگرام می‌گوید صبر کن؛ اگر بی‌اعتنا هر ۲ ثانیه دوباره بزنیم،
+            # پنجره‌ی جریمه تازه می‌شود و 429 ادامه پیدا می‌کند.
+            try:
+                wait = int(data.get("parameters", {}).get("retry_after", 5))
+            except Exception:
+                wait = 5
+            time.sleep(min(max(wait, 1), 60))
         return []
     return data.get("result", [])
 
