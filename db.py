@@ -18,10 +18,30 @@
 import json
 import os
 import time
+from datetime import datetime, timezone
 
 import requests
 
 STATE_FILE = os.environ.get("GODSTAR_STATE_FILE") or "godstar_state.json"
+
+
+def _now_iso():
+    """زمان فعلی به‌صورت ISO 8601 (UTC)؛ سوپابیس برای timestamptz
+    عدد خام قبول نمی‌کند، پس created_at هرگز int ذخیره نمی‌شود."""
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _ts_value(value):
+    """مقدار زمانی (ISO یا epoch) را به ثانیه‌ی epoch تبدیل می‌کند؛
+    برای مرتب‌سازی سفارش‌ها (داده‌ی قدیمی int هم پشتیبانی می‌شود)."""
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return datetime.fromisoformat(value).timestamp()
+        except ValueError:
+            return 0.0
+    return 0.0
 
 # نگاشت جدول سوپابیس -> کلید حافظه‌ی محلی
 _TABLES = {
@@ -32,6 +52,7 @@ _TABLES = {
     "referrals": "referrals",         # list of rows
     "support_threads": "support_threads",  # dict: str(admin_msg_id) -> row
     "auto_replies": "auto_replies",   # list of rows
+    "order_reminders": "order_reminders",  # list of rows: {order_no, kind}
 }
 # ستون کلید اصلی هر جدول (برای upsert)
 _TABLE_KEYS = {
@@ -49,6 +70,7 @@ def _empty_state():
     return {
         "users": {}, "orders": {}, "wallet_tx": [], "discount_codes": {},
         "referrals": [], "support_threads": {}, "auto_replies": [],
+        "order_reminders": [],
         "order_seq": 1000, "referral_seq": 0, "wallet_tx_seq": 0,
         "auto_reply_seq": 0, "tg_offset": 0,
         "support_mode": {},   # str(chat_id) -> True (کاربر در حالت پشتیبانی است)
@@ -139,7 +161,13 @@ class Store:
         try:
             state = _empty_state()
             for table, key in _TABLES.items():
-                rows = self._sb_get_all(table)
+                try:
+                    rows = self._sb_get_all(table)
+                except Exception as ex:
+                    # یک جدولِ جاافتاده (مثلاً بعد از اضافه شدن جدول تازه،
+                    # قبل از اجرای supabase.sql) نباید کل حافظه را بیندازد.
+                    print(f"supabase table {table} skipped:", ex)
+                    continue
                 if isinstance(state[key], dict):
                     pk = _TABLE_KEYS[table]
                     state[key] = {str(row[pk]): row for row in rows}
@@ -180,15 +208,17 @@ class Store:
         with open(self.state_file, "w", encoding="utf-8") as f:
             json.dump(self.state, f, ensure_ascii=False)
         if self.supabase_enabled():
-            try:
-                for table, key in _TABLES.items():
-                    val = self.state[key]
-                    rows = list(val.values()) if isinstance(val, dict) else list(val)
-                    # ردیف‌های JSONB (details) را به dict نگه می‌داریم؛
-                    # سوپابیس آن‌ها را به‌صورت jsonb می‌پذیرد.
+            for table, key in _TABLES.items():
+                val = self.state[key]
+                rows = list(val.values()) if isinstance(val, dict) else list(val)
+                # ردیف‌های JSONB (details) را به dict نگه می‌داریم؛
+                # سوپابیس آن‌ها را به‌صورت jsonb می‌پذیرد.
+                try:
                     self._sb_upsert_rows(table, rows)
-            except Exception as ex:
-                print("supabase save failed:", ex, "— local file kept")
+                except Exception as ex:
+                    # خطای یک جدول نباید جدول‌های بعدی را نجات‌ندهَد.
+                    print(f"supabase save failed ({table}):", ex,
+                          "— local file kept")
         self.dirty = False
 
     def save_if_dirty(self):
@@ -205,7 +235,7 @@ class Store:
                     "first_name": first_name or "", "wallet_balance": "0",
                     "completed_orders": 0, "referral_code": "",
                     "referred_by": "", "referral_discount_used": False,
-                    "referral_credit": False, "created_at": int(time.time())}
+                    "referral_credit": False, "created_at": _now_iso()}
             users[key] = user
             self.dirty = True
         else:
@@ -273,7 +303,7 @@ class Store:
                  "paid_by_wallet": bool(paid_by_wallet),
                  "status": "pending", "tx_hash": tx_hash or "",
                  "receipt_file_id": receipt_file_id or "",
-                 "created_at": int(time.time())}
+                 "created_at": _now_iso()}
         self.state["orders"][order_no] = order
         self.dirty = True
         return order
@@ -287,7 +317,7 @@ class Store:
             orders = [o for o in orders if o.get("status") == status]
         if user_id is not None:
             orders = [o for o in orders if o.get("user_id") == int(user_id)]
-        orders.sort(key=lambda o: o.get("created_at") or 0)
+        orders.sort(key=lambda o: _ts_value(o.get("created_at")))
         return orders
 
     def list_pending_orders(self):
@@ -303,8 +333,37 @@ class Store:
         if status not in ("confirmed", "rejected"):
             raise ValueError("وضعیت نامعتبر است.")
         order["status"] = status
+        if status == "confirmed":
+            # شروع اشتراک از لحظه‌ی تایید است، نه ثبت سفارش.
+            order["confirmed_at"] = _now_iso()
         self.dirty = True
         return order
+
+    def set_order_receipt(self, order_no, tx_hash="", receipt_file_id=""):
+        """رسید (عکس فیش یا هش تراکنش) را به سفارش در انتظار می‌چسباند."""
+        order = self.get_order(order_no)
+        if order is None:
+            raise ValueError("سفارشی با این شماره پیدا نشد.")
+        if tx_hash:
+            order["tx_hash"] = tx_hash
+        if receipt_file_id:
+            order["receipt_file_id"] = receipt_file_id
+        self.dirty = True
+        return order
+
+    def has_reminder(self, order_no, kind):
+        return any(r.get("order_no") == str(order_no)
+                   and r.get("kind") == kind
+                   for r in self.state["order_reminders"])
+
+    def add_reminder(self, order_no, kind):
+        """یادآوری ثبت‌شده (هر سفارش + نوع، فقط یک بار)."""
+        if self.has_reminder(order_no, kind):
+            return False
+        self.state["order_reminders"].append(
+            {"order_no": str(order_no), "kind": kind})
+        self.dirty = True
+        return True
 
     # ---------- کدهای تخفیف ----------
     def get_code(self, code):
