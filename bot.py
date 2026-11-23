@@ -8,9 +8,11 @@
 #   2) توکن را به‌عنوان Secret با نام GODSTAR_BOT_TOKEN بگذار
 #      (هیچ‌وقت توی چت یا فایل نفرست)؛
 #   3) ADMIN_CHAT_ID را هم به‌عنوان Secret بگذار (ادمین: 278899906)؛
-#   4) برای ذخیره‌ی دائمی، SUPABASE_URL و SUPABASE_SERVICE_KEY را بگذار
-#      و supabase.sql را در SQL Editor سوپابیس اجرا کن؛
-#      بدون آن‌ها حافظه در godstar_state.json می‌ماند (gitignore).
+#   4) برای ذخیره‌ی دائمی، SUPABASE_URL و SUPABASE_SERVICE_KEY و
+#      SUPABASE_PUBLISHABLE_KEY را بگذار و supabase.sql را در SQL Editor
+#      سوپابیس اجرا کن؛ بدون آن‌ها حافظه در godstar_state.json می‌ماند
+#      (gitignore). کلید عمومی فقط برای apikey و کلید محرمانه فقط برای
+#      Authorization است (سیستم کلید تازه‌ی سوپابیس).
 #
 # الگو از ربات دنبال‌کننده‌ی GodNews24 گرفته شده: فراخوانی خام Bot API
 # با requests، long-poll، مدیریت 429، و خطای شبکه که حلقه را نمی‌شکند.
@@ -28,7 +30,7 @@ from pricing import (WALLET_ADDRESS, ads_price, member_price, bot_price,
                      compute_order_price, loyalty_eligible,
                      is_valid_channel_id, is_valid_referral_code)
 
-BOT_VERSION = "2026-11-23-0.1"   # فقط توی لاگ و برای ادمین در /start نوشته می‌شه
+BOT_VERSION = "2026-11-23-0.2"   # فقط توی لاگ و برای ادمین در /start نوشته می‌شه
 BOT_USERNAME = "GodStarServiceBot"
 WEBAPP_URL = os.environ.get("WEBAPP_URL") or "https://821abolfazl.github.io/godstar/"
 
