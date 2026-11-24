@@ -326,6 +326,7 @@ class BotOrderTest(unittest.TestCase):
                 "web_app_data": {"data": _json.dumps(payload, ensure_ascii=False)}}
 
     def test_webapp_order_ok_with_god10(self):
+        self.store.add_code("GOD10", 10, 0)
         msg = self._webapp_msg(111, {"type": "order", "service": "members",
                                      "details": {"count": 5000, "channel_id": "@GodNews24"},
                                      "discount_code": "GOD10",
@@ -487,6 +488,7 @@ class BotOrderTest(unittest.TestCase):
 
     def test_discount_code_once_per_user(self):
         # هر نفر از هر کد تخفیف فقط یک بار می‌تواند استفاده کند
+        self.store.add_code("GOD10", 10, 0)
         order = godstar.place_order(
             self.store, 111, "members",
             {"count": 1000, "channel_id": "@GodNews24"},
@@ -595,6 +597,13 @@ class MenuAndAdminTest(unittest.TestCase):
         # لینک معرفی و راهنمای رسید باید به ربات اصلی (@GodStarShopBot)
         # برود، نه ربات بازنشسته (@GodStarServiceBot)
         self.assertEqual(godstar.BOT_USERNAME, "GodStarShopBot")
+
+    def test_ensure_defaults_does_not_resurrect_deleted_code(self):
+        # کدی که ادمین حذف کرده با شروع ران تازه برنمی‌گردد
+        self.store.add_code("GOD10", 10, 0)
+        self.store.del_code("GOD10")
+        godstar.ensure_defaults(self.store)
+        self.assertIsNone(self.store.get_code("GOD10"))
 
     def test_setup_menu_button_opens_webapp(self):
         self.assertTrue(godstar.setup_menu_button())
@@ -733,6 +742,7 @@ class MenuAndAdminTest(unittest.TestCase):
         self.assertTrue(any("زمان پاسخ تمام شد" in t for _, t, _ in self.sent))
 
     def test_new_command_clears_pending_prompt(self):
+        self.store.add_code("GOD10", 10, 0)
         godstar.handle_message(self.store, self._admin_msg("/approve"))
         godstar.handle_message(self.store, self._admin_msg("/codes"))
         self.assertNotIn("278899906",
@@ -930,6 +940,7 @@ class RemindersAndReorderTest(unittest.TestCase):
     def test_reorder_does_not_carry_discount_code(self):
         # سفارش دوباره کد تخفیف را دوباره اعمال نمی‌کند و کد قدیمی را
         # در جزئیات سفارش تازه نمی‌گذارد
+        self.store.add_code("GOD10", 10, 0)
         orig = godstar.place_order(
             self.store, 111, "members",
             {"count": 1000, "channel_id": "@GodNews24"},
