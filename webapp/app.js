@@ -112,7 +112,7 @@ function fallbackCopy(text) {
 
 /* ---------------- demo / shared state ---------------- */
 var WALLET_ADDRESS = "0x747f4B72a967fC504a77Ba38a681939dDeB6F793";
-var BOT_USERNAME = "GodStarServiceBot"; /* NEVER GodStarBot */
+var BOT_USERNAME = "GodStarShopBot"; /* ربات اصلی؛ هرگز GodStarServiceBot (بازنشسته) یا GodStarBot نیست */
 var REFERRAL_CODE = "GOD4821"; /* حالت نمونه (مرورگر)؛ داخل تلگرام از روی آیدی کاربر ساخته می‌شود */
 var walletBalance = 20; /* demo balance (USDT); real balance comes from the bot later */
 var walletKnown = true; /* false داخل تلگرام: موجودی واقعی را وب‌اپ نمی‌داند؛ ربات اعتبارسنجی می‌کند */
