@@ -32,7 +32,7 @@ from pricing import (WALLET_ADDRESS, ads_price, member_price, bot_price,
                      compute_order_price, loyalty_eligible,
                      is_valid_channel_id, is_valid_referral_code)
 
-BOT_VERSION = "2026-11-24-0.4"   # فقط توی لاگ و برای ادمین در /start نوشته می‌شه
+BOT_VERSION = "2026-11-24-0.5"   # فقط توی لاگ و برای ادمین در /start نوشته می‌شه
 BOT_USERNAME = "GodStarServiceBot"
 WEBAPP_URL = os.environ.get("WEBAPP_URL") or "https://821abolfazl.github.io/godstar-bot/"
 
@@ -150,6 +150,41 @@ def setup_menu_button():
         print("تنظیم دکمه‌ی منو ناموفق بود (در لاگ بالا ببین)")
         return False
     print("دکمه‌ی منوی مینی‌اپ تنظیم شد")
+    return True
+
+
+def setup_commands():
+    """دستورها را در منوی تلگرام می‌گذارد — فقط برای ادمین.
+
+    با scope چت ادمین، فقط او دستورهای ادمین را در منو می‌بیند
+    (با تایپ «/»)؛ برای بقیه هیچ دستوری اضافه نمی‌شود — همان چیزی
+    که الان می‌بینند. خطا در آن هرگز نباید استارت ربات را خراب کند.
+    """
+    if not ADMIN_CHAT_ID:
+        return False
+    commands = [
+        {"command": "start", "description": "شروع و فروشگاه"},
+        {"command": "help", "description": "راهنما"},
+        {"command": "orders", "description": "سفارش‌های در انتظار"},
+        {"command": "approve", "description": "تایید سفارش"},
+        {"command": "reject", "description": "رد سفارش"},
+        {"command": "codes", "description": "لیست کدهای تخفیف"},
+        {"command": "addcode", "description": "ساخت کد تخفیف"},
+        {"command": "delcode", "description": "حذف کد تخفیف"},
+        {"command": "broadcast", "description": "پیام همگانی"},
+        {"command": "stats", "description": "آمار فروش"},
+        {"command": "autoreplies", "description": "پاسخ‌های خودکار"},
+        {"command": "addreply", "description": "افزودن پاسخ خودکار"},
+        {"command": "delreply", "description": "حذف پاسخ خودکار"},
+    ]
+    res = api("setMyCommands",
+              commands=json.dumps(commands, ensure_ascii=False),
+              scope=json.dumps({"type": "chat",
+                                "chat_id": int(ADMIN_CHAT_ID)}))
+    if res is None:
+        print("تنظیم دستورهای ادمین در منو ناموفق بود (در لاگ بالا ببین)")
+        return False
+    print("دستورهای ادمین در منو تنظیم شد")
     return True
 
 
@@ -1154,6 +1189,7 @@ def main():
     else:
         print("ادمین تنظیم شده — /start برای ادمین نسخه و دستورها را نشان می‌دهد")
     setup_menu_button()
+    setup_commands()
     store = Store()
     print("state backend:", "supabase" if store.supabase_enabled() else "file")
     store.load()
