@@ -308,11 +308,17 @@ class Store:
 
     def create_order(self, user_id, order_type, service, details, amount,
                      discount_kind=None, discount_percent=0, discount_amount="0",
-                     paid_by_wallet=False, tx_hash="", receipt_file_id=""):
+                     paid_by_wallet=False, tx_hash="", receipt_file_id="",
+                     discount_code=None):
         order_no = self.next_order_no()
+        details = dict(details or {})
+        if discount_code:
+            # کد تخفیفِ به‌کاررفته در جزئیات (jsonb) ثبت می‌شود تا
+            # مصرفِ هر کاربر از روی سفارش‌هایش خوانده شود.
+            details["discount_code"] = str(discount_code).upper()
         order = {"order_no": order_no, "user_id": int(user_id),
                  "type": order_type, "service": service,
-                 "details": details or {}, "amount": str(amount),
+                 "details": details, "amount": str(amount),
                  "discount_kind": discount_kind or "",
                  "discount_percent": int(discount_percent or 0),
                  "discount_amount": str(discount_amount),
@@ -421,6 +427,24 @@ class Store:
         row["uses"] = int(row.get("uses") or 0) + 1
         self.dirty = True
         return row
+
+    def has_used_code(self, chat_id, code):
+        """آیا این کاربر قبلاً از این کد تخفیف استفاده کرده است؟
+
+        مصرف هر کاربر از روی سفارش‌هایش خوانده می‌شود: سفارشی که با
+        همان کد ثبت شده باشد. سفارش‌های پیش از نسخه‌ی ۰٫۸ کد را در
+        جزئیاتشان ندارند، پس صاحبشان یک بار دیگر می‌تواند از کد
+        استفاده کند.
+        """
+        code = str(code).upper()
+        for order in self.state["orders"].values():
+            if int(order.get("user_id") or 0) != int(chat_id):
+                continue
+            if order.get("discount_kind") != "code":
+                continue
+            if str((order.get("details") or {}).get("discount_code") or "").upper() == code:
+                return True
+        return False
 
     # ---------- معرفی ----------
     def get_or_create_referral_code(self, chat_id):
