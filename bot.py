@@ -32,7 +32,7 @@ from pricing import (WALLET_ADDRESS, ads_price, member_price, bot_price,
                      compute_order_price, loyalty_eligible,
                      is_valid_channel_id, is_valid_referral_code)
 
-BOT_VERSION = "2026-11-24-0.8"   # فقط توی لاگ و برای ادمین در /start نوشته می‌شه
+BOT_VERSION = "2026-11-24-0.9"   # فقط توی لاگ و برای ادمین در /start نوشته می‌شه
 BOT_USERNAME = "GodStarShopBot"  # ربات اصلی؛ هرگز GodStarServiceBot (بازنشسته) نیست
 WEBAPP_URL = os.environ.get("WEBAPP_URL") or "https://821abolfazl.github.io/godstar-bot/"
 
@@ -336,7 +336,12 @@ def status_label(status):
 
 
 def ensure_defaults(store):
-    """پاسخ‌های خودکار پیش‌فرض و کد GOD10 اگر هنوز ثبت نشده باشند."""
+    """پاسخ‌های خودکار پیش‌فرض اگر هنوز ثبت نشده باشند.
+
+    کد تخفیف اینجا ساخته نمی‌شود: کدی که ادمین با /delcode حذف کرده
+    نباید با شروع ران تازه برگردد (قبلاً GOD10 همین‌طور برمی‌گشت).
+    کد را ادمین با /addcode می‌سازد.
+    """
     if not store.list_auto_replies():
         store.add_auto_reply(
             "سفارشم کی آماده می‌شه؟",
@@ -346,8 +351,6 @@ def ensure_defaults(store):
             "چطور پرداخت کنم؟",
             "فقط تتر (USDT) روی شبکه‌ی BEP20 به آدرس کیف پول ما بفرست و "
             "رسید یا کد هش تراکنش را ارسال کن.")
-    if store.get_code("GOD10") is None:
-        store.add_code("GOD10", 10, 0)
     store.save_if_dirty()
 
 
