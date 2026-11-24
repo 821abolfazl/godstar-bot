@@ -200,6 +200,73 @@ class StoreTest(unittest.TestCase):
         self.assertEqual(headers["apikey"], "sb_secret_X")
         self.assertEqual(headers["Authorization"], "Bearer sb_secret_X")
 
+    def test_upsert_sends_on_conflict(self):
+        # بدون on_conflict سوپابیس upsert را ۴۰۰ می‌کند (علت خطای ذخیره
+        # در اجرای ۳۵). هر جدول ستون کلید خودش را می‌فرستد.
+        import db as _db
+        store = Store(state_file=os.path.join(self.tmp.name, "s4.json"),
+                      supabase_url="https://example.supabase.co",
+                      supabase_key="k")
+        calls = []
+
+        class _Resp:
+            status_code = 201
+            ok = True
+            text = ""
+
+        orig_post = _db.requests.post
+        _db.requests.post = lambda url, **kw: calls.append(url) or _Resp()
+        try:
+            store._sb_upsert_rows("users", [{"chat_id": 1, "username": "u"}])
+            store._sb_upsert_rows("order_reminders",
+                                  [{"order_no": "GS-1001", "kind": "renewal"}])
+            store._sb_upsert_rows("discount_codes",
+                                  [{"code": "GOD10", "percent": 10}])
+        finally:
+            _db.requests.post = orig_post
+        self.assertIn("on_conflict=chat_id", calls[0])
+        self.assertIn("on_conflict=order_no,kind", calls[1])
+        self.assertIn("on_conflict=code", calls[2])
+
+    def test_upsert_error_includes_response_body(self):
+        # علت دقیق سوپابیس (مثلاً ستون ناشناخته) باید در لاگ دیده شود،
+        # نه فقط «400 Bad Request».
+        import db as _db
+        store = Store(state_file=os.path.join(self.tmp.name, "s5.json"),
+                      supabase_url="https://example.supabase.co",
+                      supabase_key="k")
+
+        class _Resp:
+            status_code = 400
+            ok = False
+            text = '{"message": "Could not find the \'x\' column"}'
+
+        orig_post = _db.requests.post
+        _db.requests.post = lambda url, **kw: _Resp()
+        try:
+            with self.assertRaises(RuntimeError) as ctx:
+                store._sb_upsert_rows("users", [{"chat_id": 1}])
+        finally:
+            _db.requests.post = orig_post
+        self.assertIn("Could not find", str(ctx.exception))
+
+    def test_created_at_is_iso_string(self):
+        # timestamptz عدد خام قبول نمی‌کند؛ هر چهار جایی که int می‌گذاشت
+        # حالا ISO می‌گذارد (علت پنهان ۴۰۰های بعدی).
+        self.store.credit_wallet(111, 7, note="test")
+        tx = self.store.state["wallet_tx"][0]
+        self.assertIsInstance(tx["created_at"], str)
+        self.assertIn("T", tx["created_at"])
+        self.store.map_support_message(55, 111)
+        thread = self.store.state["support_threads"]["55"]
+        self.assertIsInstance(thread["created_at"], str)
+        user = self.store.ensure_user(111)
+        user["referral_code"] = "GOD4821"
+        status, _ = self.store.record_referral_use("GOD4821", 222)
+        self.assertEqual(status, "ok")
+        self.assertIsInstance(
+            self.store.state["referrals"][0]["created_at"], str)
+
 
 class BotOrderTest(unittest.TestCase):
     """تست ثبت سفارش و وب‌اپ؛ فراخوانی‌های تلگرام کاملاً جایگزین می‌شوند."""
@@ -486,6 +553,35 @@ class MenuAndAdminTest(unittest.TestCase):
     def test_setup_menu_button_skipped_without_url(self):
         godstar.WEBAPP_URL = ""
         self.assertFalse(godstar.setup_menu_button())
+        self.assertEqual(self.api_calls, [])
+
+    def test_setup_commands_admin_scope_only(self):
+        # فقط یک فراخوانی setMyCommands با scope چت ادمین؛ برای بقیه
+        # هیچ دستوری اضافه نمی‌شود (همان چیزی که الان می‌بینند).
+        self.assertTrue(godstar.setup_commands())
+        self.assertEqual(len(self.api_calls), 1)
+        method, data = self.api_calls[0]
+        self.assertEqual(method, "setMyCommands")
+        import json as _json
+        scope = _json.loads(data["scope"])
+        self.assertEqual(scope, {"type": "chat", "chat_id": 278899906})
+        commands = _json.loads(data["commands"])
+        names = [c["command"] for c in commands]
+        self.assertEqual(names, ["start", "help", "orders", "approve",
+                                 "reject", "codes", "addcode", "delcode",
+                                 "broadcast", "stats", "autoreplies",
+                                 "addreply", "delreply"])
+        for c in commands:
+            self.assertFalse(c["command"].startswith("/"))
+            self.assertTrue(c["description"].strip())
+
+    def test_setup_commands_failure_is_tolerated(self):
+        godstar.api = lambda method, **data: None
+        self.assertFalse(godstar.setup_commands())
+
+    def test_setup_commands_skipped_without_admin(self):
+        godstar.ADMIN_CHAT_ID = ""
+        self.assertFalse(godstar.setup_commands())
         self.assertEqual(self.api_calls, [])
 
     def test_admin_reply_to_customer_has_shop_button(self):
