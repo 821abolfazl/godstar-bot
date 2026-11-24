@@ -584,6 +584,106 @@ class MenuAndAdminTest(unittest.TestCase):
         self.assertFalse(godstar.setup_commands())
         self.assertEqual(self.api_calls, [])
 
+    def test_main_keyboard_has_admin_button_for_admin(self):
+        texts = [b["text"] for row in godstar.main_keyboard(True)["keyboard"]
+                 for b in row]
+        self.assertIn("📋 دستورهای ادمین", texts)
+
+    def test_main_keyboard_has_no_admin_button_for_users(self):
+        texts = [b["text"] for row in godstar.main_keyboard()["keyboard"]
+                 for b in row]
+        self.assertNotIn("📋 دستورهای ادمین", texts)
+
+    def test_admin_commands_button_shows_commands_keyboard(self):
+        godstar.handle_message(self.store, self._admin_msg("📋 دستورهای ادمین"))
+        self.assertTrue(any("دستورهای ادمین" in t for _, t, _ in self.sent))
+        _, _, markup = self.sent[-1]
+        texts = [b["text"] for row in markup["keyboard"] for b in row]
+        for cmd in ("/orders", "/approve", "/reject", "/codes", "/addcode",
+                    "/delcode", "/broadcast", "/stats", "/autoreplies",
+                    "/addreply", "/delreply"):
+            self.assertIn(cmd, texts)
+        self.assertIn("🔙 بازگشت به منو", texts)
+
+    def test_admin_commands_button_ignored_for_users(self):
+        msg = {"chat": {"id": 111}, "from": {"id": 111},
+               "text": "📋 دستورهای ادمین"}
+        godstar.handle_message(self.store, msg)
+        self.assertFalse(any("دستورهای ادمین" in t for _, t, _ in self.sent))
+
+    def test_back_button_returns_to_main_keyboard(self):
+        godstar.handle_message(self.store, self._admin_msg("📋 دستورهای ادمین"))
+        godstar.handle_message(self.store, self._admin_msg("🔙 بازگشت به منو"))
+        _, _, markup = self.sent[-1]
+        texts = [b["text"] for row in markup["keyboard"] for b in row]
+        self.assertIn("📋 دستورهای ادمین", texts)
+        self.assertNotIn("/approve", texts)
+
+    def _admin_msg(self, text):
+        return {"chat": {"id": 278899906}, "from": {"id": 278899906},
+                "text": text}
+
+    def test_bare_approve_asks_for_order_number(self):
+        godstar.handle_message(self.store, self._admin_msg("/approve"))
+        self.assertTrue(any("شماره سفارش" in t for _, t, _ in self.sent))
+        prompt = self.store.state.get("pending_prompt", {}).get("278899906")
+        self.assertIsNotNone(prompt)
+        self.assertEqual(prompt["cmd"], "/approve")
+
+    def test_prompt_reply_confirms_order(self):
+        order = self.store.create_order(111, "order", "members",
+                                        {"count": 1000}, "3")
+        godstar.handle_message(self.store, self._admin_msg("/approve"))
+        godstar.handle_message(self.store, self._admin_msg(order["order_no"]))
+        self.assertTrue(any(f"✅ سفارش {order['order_no']} تایید شد." in t
+                            for _, t, _ in self.sent))
+        self.assertEqual(
+            self.store.get_order(order["order_no"])["status"], "confirmed")
+        self.assertNotIn("278899906",
+                         self.store.state.get("pending_prompt", {}))
+
+    def test_prompt_cancel(self):
+        godstar.handle_message(self.store, self._admin_msg("/approve"))
+        godstar.handle_message(self.store, self._admin_msg("لغو"))
+        self.assertTrue(any("لغو شد" in t for _, t, _ in self.sent))
+        self.assertNotIn("278899906",
+                         self.store.state.get("pending_prompt", {}))
+
+    def test_prompt_expires_after_ten_minutes(self):
+        import time as _time
+        godstar.handle_message(self.store, self._admin_msg("/approve"))
+        self.store.state["pending_prompt"]["278899906"]["at"] = (
+            _time.time() - 700)
+        godstar.handle_message(self.store, self._admin_msg("GS-1001"))
+        self.assertTrue(any("زمان پاسخ تمام شد" in t for _, t, _ in self.sent))
+
+    def test_new_command_clears_pending_prompt(self):
+        godstar.handle_message(self.store, self._admin_msg("/approve"))
+        godstar.handle_message(self.store, self._admin_msg("/codes"))
+        self.assertNotIn("278899906",
+                         self.store.state.get("pending_prompt", {}))
+        self.assertTrue(any("کدهای تخفیف" in t for _, t, _ in self.sent))
+
+    def test_keyboard_button_works_during_prompt(self):
+        order = self.store.create_order(111, "order", "members",
+                                        {"count": 1000}, "3")
+        godstar.handle_message(self.store, self._admin_msg("/approve"))
+        # ادمین برای پیدا کردن شماره، سفارش‌های من را باز می‌کند؛
+        # پرسش باید بماند تا بعد شماره را بفرستد.
+        godstar.handle_message(self.store, self._admin_msg("📦 سفارش‌های من"))
+        self.assertIn("278899906",
+                      self.store.state.get("pending_prompt", {}))
+        godstar.handle_message(self.store, self._admin_msg(order["order_no"]))
+        self.assertTrue(any("تایید شد" in t for _, t, _ in self.sent))
+
+    def test_addcode_prompt_with_two_args(self):
+        godstar.handle_message(self.store, self._admin_msg("/addcode"))
+        self.assertTrue(any("کد و درصد" in t for _, t, _ in self.sent))
+        godstar.handle_message(self.store, self._admin_msg("GOD20 20"))
+        self.assertTrue(any("GOD20" in t and "20٪" in t
+                            for _, t, _ in self.sent))
+        self.assertIsNotNone(self.store.get_code("GOD20"))
+
     def test_admin_reply_to_customer_has_shop_button(self):
         self.store.map_support_message(55, 111)
         msg = {"chat": {"id": 278899906}, "from": {"id": 278899906},
@@ -826,6 +926,29 @@ class RemindersAndReorderTest(unittest.TestCase):
             _Store._sb_get_all = orig
         self.assertEqual(store.state["order_reminders"], [])
         self.assertEqual(store.state["orders"], {})
+
+    def test_load_normalizes_partial_discount_codes(self):
+        # ردیف ناقص (بدون uses/active) کد را «غیرفعال» نشان می‌دهد؛
+        # هنگام خواندن، پیش‌فرض‌های اسکیما پر می‌شوند.
+        from db import Store as _Store
+        orig = _Store._sb_get_all
+
+        def fake(self, table):
+            if table == "discount_codes":
+                return [{"code": "GOD10", "percent": 10, "max_uses": 0}]
+            return [] if table in ("wallet_tx", "referrals", "auto_replies",
+                                   "order_reminders") else {}
+        _Store._sb_get_all = fake
+        try:
+            store = _Store(state_file=os.path.join(self.tmp.name, "s3.json"),
+                           supabase_url="https://x.supabase.co",
+                           supabase_key="k")
+            store.load()
+        finally:
+            _Store._sb_get_all = orig
+        row = store.state["discount_codes"]["GOD10"]
+        self.assertEqual(row.get("uses"), 0)
+        self.assertTrue(row.get("active"))
 
 
 class GetUpdatesTest(unittest.TestCase):
