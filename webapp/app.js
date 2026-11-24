@@ -21,6 +21,13 @@
  * --- Telegram API use ---
  * ready() + expand() on load. BackButton drives in-app back navigation
  * (shown on every screen except home). HapticFeedback on taps, guarded.
+ * sendData ONLY works when the Mini App was launched from a Keyboard
+ * button (the «🛍 باز کردن فروشگاه» button below the chat input). From
+ * the menu button (blue) or an inline button, Telegram does not deliver
+ * sendData to the bot at all — it fails silently. The app detects that
+ * case (query_id present in initData) and tells the user to reopen the
+ * shop from the keyboard button instead of showing a fake success.
+ * (shown on every screen except home). HapticFeedback on taps, guarded.
  * MainButton is deliberately NOT used: every screen already has its own
  * in-page submit button, and a second MainButton would risk double
  * submits. themeParams are deliberately ignored: v1 is the minimal LIGHT
@@ -54,6 +61,22 @@
 
 var tg = (window.Telegram && window.Telegram.WebApp) ? window.Telegram.WebApp : null;
 var DEMO = !tg;
+
+/* sendData فقط وقتی کار می‌کند که مینی‌اپ از دکمه‌ی کیبورد باز شده
+   باشد (دکمه‌ی «🛍 باز کردن فروشگاه» در پایین گفتگو با ربات). از دکمه‌ی
+   منو (آبی) یا دکمه‌ی درون پیام، تلگرام داده را به ربات نمی‌رساند و
+   sendData بی‌صدا هیچ کاری نمی‌کند — برای همین سفارش ثبت می‌شد ولی به
+   ربات نمی‌رسید. query_id فقط در همان بازشدن‌های غیرکیبوردی هست، پس
+   نبودنش یعنی ارسال ممکن است. در حالت نمونه (مرورگر) ارسال نمایشی است. */
+var CAN_SEND = DEMO || !(tg && tg.initDataUnsafe && tg.initDataUnsafe.query_id);
+var SEND_BLOCKED_TEXT = "برای ثبت سفارش، فروشگاه را از دکمه‌ی «🛍 باز کردن فروشگاه» در پایین گفتگو با ربات باز کن — از دکمه‌ی آبی منو نمی‌شود سفارش ثبت کرد.";
+function ensureSendable() {
+  if (CAN_SEND) return true;
+  if (tg && tg.showAlert) { try { tg.showAlert(SEND_BLOCKED_TEXT); } catch (e) {} }
+  var banner = $("send-blocked-banner");
+  if (banner) banner.classList.remove("hidden");
+  return false;
+}
 
 /* ---------------- helpers ---------------- */
 function $(id) { return document.getElementById(id); }
@@ -554,7 +577,7 @@ function openPayment(order) {
      change listener from bindFilePreview writes into this same object */
   if (payState.receiptFile) payState.receiptFile.file = null;
   $("pay-receipt-file").value = "";
-  $("discount-code").value = "GOD10"; /* mockup default: GOD10 already applied */
+  $("discount-code").value = ""; /* کد تخفیف را خود کاربر وارد می‌کند؛ چیزی از پیش پر نمی‌شود */
   $("pay-from-wallet").checked = false;
   $("pay-hash").value = "";
   var photoRadio = document.querySelector('input[name="pay-receipt"][value="photo"]');
@@ -586,6 +609,7 @@ function bindPayment() {
   $("btn-charge-pay").addEventListener("click", function () { haptic("light"); showScreen("wallet"); });
   $("pay-submit").addEventListener("click", function () {
     if (!pendingOrder) return;
+    if (!ensureSendable()) return;
     haptic("medium");
     var walletPay = $("pay-from-wallet").checked &&
       (!walletKnown || walletBalance >= payPayable()) && pendingOrder.amount > 0;
@@ -669,6 +693,7 @@ function bindWallet() {
   });
   $("wallet-hash").addEventListener("input", renderWallet);
   $("wallet-submit").addEventListener("click", function () {
+    if (!ensureSendable()) return;
     haptic("medium");
     sendData({
       type: "wallet_charge",
@@ -709,6 +734,7 @@ function renderOrders(list) {
       btn.textContent = "📦 مشاهده سفارش‌ها در ربات";
       btn.addEventListener("click", function () {
         haptic("light");
+        if (!ensureSendable()) return;
         sendData({ type: "my_orders" });
       });
       box.appendChild(btn);
@@ -821,6 +847,7 @@ function bindSupport() {
   function sendSupport() {
     var text = $("support-input").value.trim();
     if (!text && !supportPhoto) return;
+    if (!ensureSendable()) return;
     haptic("medium");
     sendData({
       type: "support_message",
@@ -902,6 +929,10 @@ function init() {
     $("btn-share-referral").textContent = "اشتراک‌گذاری";
     var loyaltyCard = document.querySelector(".loyalty-card");
     if (loyaltyCard) loyaltyCard.style.display = "none";
+    if (!CAN_SEND) {
+      var sendBanner = $("send-blocked-banner");
+      if (sendBanner) sendBanner.classList.remove("hidden");
+    }
   }
   renderFriends(friends);
   renderOrders(orders);
