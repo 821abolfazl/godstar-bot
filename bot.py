@@ -4,7 +4,7 @@
 # پرداخت فقط تتر (USDT) روی شبکه‌ی BEP20.
 #
 # راه‌اندازی:
-#   1) ربات در BotFather ساخته شده: @GodStarServiceBot
+#   1) ربات در BotFather ساخته شده: @GodStarShopBot
 #   2) توکن را به‌عنوان Secret با نام GODSTAR_BOT_TOKEN بگذار
 #      (هیچ‌وقت توی چت یا فایل نفرست)؛
 #   3) ADMIN_CHAT_ID را هم به‌عنوان Secret بگذار (ادمین: 278899906)؛
@@ -32,8 +32,8 @@ from pricing import (WALLET_ADDRESS, ads_price, member_price, bot_price,
                      compute_order_price, loyalty_eligible,
                      is_valid_channel_id, is_valid_referral_code)
 
-BOT_VERSION = "2026-11-24-0.7"   # فقط توی لاگ و برای ادمین در /start نوشته می‌شه
-BOT_USERNAME = "GodStarServiceBot"
+BOT_VERSION = "2026-11-24-0.8"   # فقط توی لاگ و برای ادمین در /start نوشته می‌شه
+BOT_USERNAME = "GodStarShopBot"  # ربات اصلی؛ هرگز GodStarServiceBot (بازنشسته) نیست
 WEBAPP_URL = os.environ.get("WEBAPP_URL") or "https://821abolfazl.github.io/godstar-bot/"
 
 TOKEN = os.environ.get("GODSTAR_BOT_TOKEN") or ""
@@ -418,6 +418,8 @@ def _discount_context(store, user, discount_code):
             raise ValueError("کد تخفیف معتبر نیست.")
         if code_row.get("max_uses") and int(code_row.get("uses") or 0) >= int(code_row["max_uses"]):
             raise ValueError("این کد تخفیف دیگر قابل استفاده نیست.")
+        if store.has_used_code(user.get("chat_id"), discount_code):
+            raise ValueError("شما قبلاً از این کد تخفیف استفاده کرده‌اید.")
         code_percent = int(code_row["percent"])
     return loyalty, referral, code_percent, code_row
 
@@ -505,6 +507,7 @@ def place_order(store, user_id, service, details, discount_code=None,
         user_id, order_type, service, details, str(final),
         discount_kind=kind, discount_percent=percent,
         discount_amount=str(discount_amount),
+        discount_code=(code_row["code"] if kind == "code" and code_row else None),
         paid_by_wallet=bool(paid_by_wallet),
         tx_hash=(tx_hash or "").strip(),
         receipt_file_id=receipt_file_id or "")
@@ -609,6 +612,7 @@ def reorder_order(store, chat_id, order_no):
     details = dict(order.get("details") or {})
     details.pop("receipt_file_name", None)
     details.pop("receipt_file_size", None)
+    details.pop("discount_code", None)  # سفارش دوباره کد را دوباره اعمال نمی‌کند
     user_id = int(chat_id)
     paid_from_wallet = False
     try:
