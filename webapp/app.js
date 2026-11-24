@@ -214,8 +214,8 @@ function renderFriends(list) {
   });
 }
 function refreshWalletLabels() {
-  /* داخل تلگرام موجودی واقعی معلوم نیست؛ عدد ساختگی نشان نمی‌دهیم. */
-  var label = walletKnown ? faTether(walletBalance) : "—";
+  /* داخل تلگرام موجودی واقعی معلوم نیست؛ به‌جای خط تیره صفر نشان داده می‌شود. */
+  var label = faTether(walletBalance);
   $("wallet-balance-home").textContent = label;
   $("wallet-balance-pay").textContent = label;
   $("wallet-balance-check").textContent = label;
