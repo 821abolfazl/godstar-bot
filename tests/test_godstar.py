@@ -485,6 +485,28 @@ class BotOrderTest(unittest.TestCase):
         self.assertEqual(order2["amount"], "3.00")
         self.assertEqual(order2["discount_kind"], "")
 
+    def test_discount_code_once_per_user(self):
+        # هر نفر از هر کد تخفیف فقط یک بار می‌تواند استفاده کند
+        order = godstar.place_order(
+            self.store, 111, "members",
+            {"count": 1000, "channel_id": "@GodNews24"},
+            discount_code="GOD10", tx_hash="abc")
+        self.assertEqual(order["discount_kind"], "code")
+        self.assertTrue(self.store.has_used_code(111, "GOD10"))
+        with self.assertRaises(ValueError) as ctx:
+            godstar.place_order(
+                self.store, 111, "members",
+                {"count": 1000, "channel_id": "@GodNews24"},
+                discount_code="GOD10", tx_hash="abc")
+        self.assertIn("قبلاً", str(ctx.exception))
+        # نفر دیگر هنوز می‌تواند از همان کد استفاده کند
+        order2 = godstar.place_order(
+            self.store, 222, "members",
+            {"count": 1000, "channel_id": "@GodNews24"},
+            discount_code="GOD10", tx_hash="abc")
+        self.assertEqual(order2["discount_kind"], "code")
+        self.assertEqual(self.store.get_code("GOD10")["uses"], 2)
+
     def test_confirm_wallet_charge_credits_balance(self):
         order = godstar.place_order(self.store, 111, "wallet_charge",
                                     {"amount": 50}, tx_hash="abc")
@@ -568,6 +590,11 @@ class MenuAndAdminTest(unittest.TestCase):
         user_text = godstar.welcome_text(False)
         self.assertNotIn("👑", user_text)
         self.assertNotIn(godstar.BOT_VERSION, user_text)
+
+    def test_bot_username_is_shop_bot(self):
+        # لینک معرفی و راهنمای رسید باید به ربات اصلی (@GodStarShopBot)
+        # برود، نه ربات بازنشسته (@GodStarServiceBot)
+        self.assertEqual(godstar.BOT_USERNAME, "GodStarShopBot")
 
     def test_setup_menu_button_opens_webapp(self):
         self.assertTrue(godstar.setup_menu_button())
@@ -899,6 +926,23 @@ class RemindersAndReorderTest(unittest.TestCase):
         self.assertIsNotNone(self.store.get_order("GS-1002"))
         self.assertTrue(any("سفارش دوباره ثبت شد" in t
                             and "از کیف پول" in t for _, t, _ in self.sent))
+
+    def test_reorder_does_not_carry_discount_code(self):
+        # سفارش دوباره کد تخفیف را دوباره اعمال نمی‌کند و کد قدیمی را
+        # در جزئیات سفارش تازه نمی‌گذارد
+        orig = godstar.place_order(
+            self.store, 111, "members",
+            {"count": 1000, "channel_id": "@GodNews24"},
+            discount_code="GOD10", tx_hash="abc")
+        self.assertEqual(orig["discount_kind"], "code")
+        self.store.credit_wallet(111, 100, note="test")
+        query = {"data": f"reorder:{orig['order_no']}", "id": "q1",
+                 "message": {"chat": {"id": 111}}}
+        godstar.handle_callback(self.store, query)
+        new_order = self.store.get_order("GS-1002")
+        self.assertIsNotNone(new_order)
+        self.assertNotEqual(new_order["discount_kind"], "code")
+        self.assertNotIn("discount_code", new_order.get("details") or {})
 
     def test_reorder_deferred_receipt_without_balance(self):
         orig = godstar.place_order(
