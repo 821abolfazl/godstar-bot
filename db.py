@@ -63,6 +63,7 @@ _TABLE_KEYS = {
     "referrals": "id",
     "support_threads": "admin_message_id",
     "auto_replies": "id",
+    "order_reminders": "order_no,kind",
 }
 
 
@@ -122,7 +123,11 @@ class Store:
     def _sb_upsert_rows(self, table, rows):
         if not rows:
             return
+        # سوپابیس برای upsert ستون درگیری را می‌خواهد؛ بدون آن ۴۰۰ می‌دهد.
+        conflict = _TABLE_KEYS.get(table, "")
         url = f"{self.supabase_url.rstrip('/')}/rest/v1/{table}"
+        if conflict:
+            url += f"?on_conflict={conflict}"
         try:
             r = requests.post(url,
                               headers={**self._sb_headers(),
@@ -134,7 +139,10 @@ class Store:
             raise RuntimeError("supabase auth failed — SUPABASE_SERVICE_KEY is wrong")
         if r.status_code == 404:
             raise RuntimeError(f"supabase table missing ({table}) — run supabase.sql in the SQL Editor")
-        r.raise_for_status()
+        if not r.ok:
+            # متن پاسخ سوپابیس علت دقیق را می‌گوید؛ در لاگ بماند.
+            raise RuntimeError(f"supabase upsert failed ({table}): "
+                               f"{r.status_code} {r.text[:300]}")
 
     def _sb_delete(self, table, key_col, key_val):
         url = (f"{self.supabase_url.rstrip('/')}/rest/v1/{table}"
@@ -265,7 +273,7 @@ class Store:
         self.state["wallet_tx"].append({
             "id": self.state["wallet_tx_seq"], "chat_id": int(chat_id),
             "amount": str(amount), "kind": "credit", "note": note,
-            "created_at": int(time.time())})
+            "created_at": _now_iso()})
         self.dirty = True
         return new_balance
 
@@ -280,7 +288,7 @@ class Store:
         self.state["wallet_tx"].append({
             "id": self.state["wallet_tx_seq"], "chat_id": int(chat_id),
             "amount": str(-float(amount)), "kind": "debit", "note": note,
-            "created_at": int(time.time())})
+            "created_at": _now_iso()})
         self.dirty = True
         return new_balance
 
@@ -443,7 +451,7 @@ class Store:
             "id": self.state["referral_seq"], "code": code,
             "referrer_id": referrer_id, "friend_id": int(friend_id),
             "used": True, "activated": False,
-            "created_at": int(time.time())})
+            "created_at": _now_iso()})
         user = self.ensure_user(friend_id)
         user["referred_by"] = code
         self.dirty = True
@@ -519,7 +527,7 @@ class Store:
         self.state["support_threads"][str(admin_message_id)] = {
             "admin_message_id": int(admin_message_id),
             "customer_chat_id": int(customer_chat_id),
-            "created_at": int(time.time())}
+            "created_at": _now_iso()}
         self.dirty = True
 
     def support_customer_for(self, admin_message_id):
