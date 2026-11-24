@@ -424,16 +424,30 @@ class Store:
 
     # ---------- معرفی ----------
     def get_or_create_referral_code(self, chat_id):
-        from pricing import make_referral_code
+        from pricing import derive_referral_code, make_referral_code
         user = self.ensure_user(chat_id)
-        if user.get("referral_code"):
-            return user["referral_code"]
-        existing = {u.get("referral_code") for u in self.state["users"].values()
-                    if u.get("referral_code")}
-        code = make_referral_code(existing)
-        user["referral_code"] = code
-        self.dirty = True
-        return code
+        derived = derive_referral_code(chat_id)
+        taken_by_other = any(
+            (u.get("referral_code") or "").upper() == derived
+            and str(u.get("chat_id")) != str(chat_id)
+            for u in self.state["users"].values())
+        if taken_by_other:
+            # در حالت نادرِ تداخل، کد تصادفی یکتا (وب‌اپ کد مشتق‌شده
+            # را نشان می‌دهد؛ برای همین این شاخه تقریباً هرگز نمی‌افتد).
+            if user.get("referral_code"):
+                return user["referral_code"]
+            existing = {u.get("referral_code") for u in self.state["users"].values()
+                        if u.get("referral_code")}
+            code = make_referral_code(existing)
+            user["referral_code"] = code
+            self.dirty = True
+            return code
+        if user.get("referral_code") != derived:
+            # کد از روی آیدی ساخته می‌شود تا ربات و وب‌اپ همیشه همان
+            # کد را نشان بدهند؛ کد تصادفی قدیمی (اگر بود) عوض می‌شود.
+            user["referral_code"] = derived
+            self.dirty = True
+        return derived
 
     def record_referral_use(self, code, friend_id):
         """ثبت استفاده‌ی دوست از کد معرفی.
