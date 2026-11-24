@@ -32,7 +32,7 @@ from pricing import (WALLET_ADDRESS, ads_price, member_price, bot_price,
                      compute_order_price, loyalty_eligible,
                      is_valid_channel_id, is_valid_referral_code)
 
-BOT_VERSION = "2026-11-24-0.6"   # فقط توی لاگ و برای ادمین در /start نوشته می‌شه
+BOT_VERSION = "2026-11-24-0.7"   # فقط توی لاگ و برای ادمین در /start نوشته می‌شه
 BOT_USERNAME = "GodStarServiceBot"
 WEBAPP_URL = os.environ.get("WEBAPP_URL") or "https://821abolfazl.github.io/godstar-bot/"
 
@@ -144,7 +144,7 @@ def setup_menu_button():
         print("WEBAPP_URL تنظیم نشده — دکمه‌ی منو تنظیم نمی‌شود")
         return False
     res = api("setChatMenuButton", menu_button=json.dumps({
-        "type": "web_app", "text": "🛍 فروشگاه",
+        "type": "web_app", "text": "فروشگاه",
         "web_app": {"url": WEBAPP_URL}}, ensure_ascii=False))
     if res is None:
         print("تنظیم دکمه‌ی منو ناموفق بود (در لاگ بالا ببین)")
@@ -204,16 +204,33 @@ def main_keyboard(is_admin=False):
 
 def admin_keyboard():
     """منوی دستورهای ادمین — با زدن دکمه‌ی «📋 دستورهای ادمین» در منوی
-    اصلی باز می‌شود؛ زدن هر دستور، همان دستور را می‌فرستد."""
+    اصلی باز می‌شود؛ روی هر دکمه کلمه و کاری که دستور انجام می‌دهد
+    نوشته شده (نه خود دستور)، و زدن آن همان دستور را می‌فرستد."""
     return {"keyboard": [
-        [{"text": "/orders"}, {"text": "/approve"}],
-        [{"text": "/reject"}, {"text": "/codes"}],
-        [{"text": "/addcode"}, {"text": "/delcode"}],
-        [{"text": "/broadcast"}, {"text": "/stats"}],
-        [{"text": "/autoreplies"}, {"text": "/addreply"}],
-        [{"text": "/delreply"}],
+        [{"text": "📦 سفارش‌های در انتظار"}, {"text": "✅ تایید سفارش"}],
+        [{"text": "❌ رد سفارش"}, {"text": "🎟 کدهای تخفیف"}],
+        [{"text": "➕ ساخت کد تخفیف"}, {"text": "🗑 حذف کد تخفیف"}],
+        [{"text": "📣 پیام همگانی"}, {"text": "📊 آمار"}],
+        [{"text": "💬 پاسخ‌های خودکار"}, {"text": "➕ ساخت پاسخ خودکار"}],
+        [{"text": "🗑 حذف پاسخ خودکار"}],
         [{"text": "🔙 بازگشت به منو"}],
     ], "resize_keyboard": True}
+
+
+# برچسب دکمه‌های منوی دستورهای ادمین → دستوری که می‌فرستند
+ADMIN_KEYBOARD_COMMANDS = {
+    "📦 سفارش‌های در انتظار": "/orders",
+    "✅ تایید سفارش": "/approve",
+    "❌ رد سفارش": "/reject",
+    "🎟 کدهای تخفیف": "/codes",
+    "➕ ساخت کد تخفیف": "/addcode",
+    "🗑 حذف کد تخفیف": "/delcode",
+    "📣 پیام همگانی": "/broadcast",
+    "📊 آمار": "/stats",
+    "💬 پاسخ‌های خودکار": "/autoreplies",
+    "➕ ساخت پاسخ خودکار": "/addreply",
+    "🗑 حذف پاسخ خودکار": "/delreply",
+}
 
 
 def support_keyboard():
@@ -750,6 +767,7 @@ def handle_web_app_data(store, msg):
     chat_id = msg["chat"]["id"]
     user = store.ensure_user(chat_id, (msg.get("from") or {}).get("username"),
                              (msg.get("from") or {}).get("first_name"))
+    store.get_or_create_referral_code(chat_id)
     try:
         payload = json.loads(msg["web_app_data"]["data"])
     except Exception:
@@ -877,17 +895,17 @@ PROMPT_FOR = {
 # دستورهای ادمین (دکمه‌ی «📋 دستورهای ادمین») استفاده می‌شود.
 ADMIN_COMMANDS_TEXT = (
     "دستورهای ادمین:\n"
-    "/orders — سفارش‌های در انتظار\n"
-    "/approve <شماره> — تایید سفارش\n"
-    "/reject <شماره> — رد سفارش\n"
-    "/codes — لیست کدهای تخفیف\n"
-    "/addcode <CODE> <درصد> [حداکثر مصرف]\n"
-    "/delcode <CODE>\n"
-    "/broadcast <متن>\n"
-    "/stats — آمار\n"
-    "/autoreplies — پاسخ‌های خودکار\n"
-    "/addreply <سؤال> | <جواب>\n"
-    "/delreply <شماره>")
+    "📦 سفارش‌های در انتظار\n"
+    "✅ تایید سفارش — با شماره سفارش\n"
+    "❌ رد سفارش — با شماره سفارش\n"
+    "🎟 کدهای تخفیف\n"
+    "➕ ساخت کد تخفیف — با کد و درصد\n"
+    "🗑 حذف کد تخفیف — با کد\n"
+    "📣 پیام همگانی — با متن پیام\n"
+    "📊 آمار\n"
+    "💬 پاسخ‌های خودکار\n"
+    "➕ ساخت پاسخ خودکار — با سؤال و جواب\n"
+    "🗑 حذف پاسخ خودکار — با شماره")
 
 
 def handle_admin_command(store, chat_id, text):
@@ -1006,6 +1024,9 @@ def handle_message(store, msg):
     frm = msg.get("from") or {}
     text = (msg.get("text") or "").strip()
     user = store.ensure_user(chat_id, frm.get("username"), frm.get("first_name"))
+    # کد معرفی هر کاربر از همان اولین پیام ساخته می‌شود تا وقتی به
+    # «کد معرفی من» می‌رسد، کد آماده باشد (بدون «دریافت کد»).
+    store.get_or_create_referral_code(chat_id)
 
     if "web_app_data" in msg:
         handle_web_app_data(store, msg)
@@ -1143,6 +1164,12 @@ def handle_message(store, msg):
     if text == "📋 دستورهای ادمین" and is_admin(chat_id):
         send_message(chat_id, ADMIN_COMMANDS_TEXT,
                      reply_markup=admin_keyboard())
+        return
+
+    # دکمه‌های منوی دستورهای ادمین — برچسب فارسی، همان دستور را می‌فرستد.
+    if text in ADMIN_KEYBOARD_COMMANDS and is_admin(chat_id):
+        handle_admin_command(store, chat_id, ADMIN_KEYBOARD_COMMANDS[text])
+        store.save_if_dirty()
         return
 
     # جواب به پرسش آرگومان دستور ادمین (مثلاً شماره سفارش برای /approve)؛
