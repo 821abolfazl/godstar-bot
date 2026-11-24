@@ -92,6 +92,16 @@ function copyText(text, btn) {
     navigator.clipboard.writeText(text).then(done, function () { fallbackCopy(text); done(); });
   } else { fallbackCopy(text); done(); }
 }
+function deriveReferralCode(userId) {
+  /* کد معرفی از روی آیدی تلگرام — همان تابع در pricing.py است و باید
+     همان خروجی را بدهد (FNV-1a سی‌ودوبیتی، GOD + شش رقم). */
+  var h = 2166136261;
+  var s = String(userId);
+  for (var i = 0; i < s.length; i++) {
+    h = Math.imul(h ^ s.charCodeAt(i), 16777619) >>> 0;
+  }
+  return "GOD" + (100000 + (h % 900000));
+}
 function fallbackCopy(text) {
   var ta = document.createElement("textarea");
   ta.value = text; ta.style.position = "fixed"; ta.style.opacity = "0";
@@ -103,7 +113,7 @@ function fallbackCopy(text) {
 /* ---------------- demo / shared state ---------------- */
 var WALLET_ADDRESS = "0x747f4B72a967fC504a77Ba38a681939dDeB6F793";
 var BOT_USERNAME = "GodStarServiceBot"; /* NEVER GodStarBot */
-var REFERRAL_CODE = "GOD4821"; /* فقط حالت نمونه (مرورگر)؛ داخل تلگرام کد واقعی را ربات می‌دهد */
+var REFERRAL_CODE = "GOD4821"; /* حالت نمونه (مرورگر)؛ داخل تلگرام از روی آیدی کاربر ساخته می‌شود */
 var walletBalance = 20; /* demo balance (USDT); real balance comes from the bot later */
 var walletKnown = true; /* false داخل تلگرام: موجودی واقعی را وب‌اپ نمی‌داند؛ ربات اعتبارسنجی می‌کند */
 
@@ -230,11 +240,6 @@ function bindHome() {
   });
   $("btn-share-referral").addEventListener("click", function () {
     haptic("light");
-    if (!DEMO) {
-      /* داخل تلگرام کد واقعی را فقط ربات می‌داند؛ از ربات می‌گیریم. */
-      sendData({ type: "referral_share" });
-      return;
-    }
     var url = "https://t.me/" + BOT_USERNAME + "?start=" + REFERRAL_CODE;
     var text = "با کد معرفی من در گاد استار سفارش بده؛ هر دو ۱۰٪ تخفیف می‌گیریم!";
     if (tg && tg.openTelegramLink) {
@@ -878,8 +883,23 @@ function init() {
     friends = [];
     walletBalance = 0;
     walletKnown = false;
-    $("referral-code").textContent = "—";
-    $("btn-share-referral").textContent = "دریافت کد";
+    /* کد معرفی از همان استارت ساخته شده است (از روی آیدی تلگرام)؛
+       زدن روی کد آن را کپی می‌کند و دکمه، لینک معرفی را به اشتراک
+       می‌گذارد — دیگر «دریافت کد» لازم نیست. */
+    var me = tg && tg.initDataUnsafe && tg.initDataUnsafe.user;
+    if (me && me.id) {
+      REFERRAL_CODE = deriveReferralCode(me.id);
+      var codeEl = $("referral-code");
+      codeEl.textContent = REFERRAL_CODE;
+      codeEl.style.cursor = "pointer";
+      codeEl.addEventListener("click", function () {
+        haptic("light");
+        copyText(REFERRAL_CODE, codeEl);
+      });
+    } else {
+      $("referral-code").textContent = "—";
+    }
+    $("btn-share-referral").textContent = "اشتراک‌گذاری";
     var loyaltyCard = document.querySelector(".loyalty-card");
     if (loyaltyCard) loyaltyCard.style.display = "none";
   }
