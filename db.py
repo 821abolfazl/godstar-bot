@@ -75,6 +75,7 @@ def _empty_state():
         "order_seq": 1000, "referral_seq": 0, "wallet_tx_seq": 0,
         "auto_reply_seq": 0, "tg_offset": 0,
         "support_mode": {},   # str(chat_id) -> True (کاربر در حالت پشتیبانی است)
+        "pending_prompt": {},  # str(chat_id) -> {"cmd", "at"} (پرسش آرگومان دستور ادمین)
     }
 
 
@@ -181,6 +182,13 @@ class Store:
                     state[key] = {str(row[pk]): row for row in rows}
                 else:
                     state[key] = rows
+            # ردیف ناقص کد تخفیف (بدون uses/active) کد را «غیرفعال» نشان
+            # می‌دهد؛ پیش‌فرض‌های اسکیما را پر کن.
+            for row in state["discount_codes"].values():
+                if isinstance(row, dict):
+                    row.setdefault("uses", 0)
+                    row.setdefault("active", True)
+                    row.setdefault("max_uses", 0)
             # شمارنده‌ها از بیشترین مقدار موجود بازسازی می‌شوند
             if state["orders"]:
                 nums = [int(no.split("-")[1]) for no in state["orders"]
