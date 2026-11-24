@@ -88,6 +88,18 @@ class PricingTest(unittest.TestCase):
         self.assertFalse(is_valid_channel_id("@ab"))
         self.assertFalse(is_valid_channel_id("@bad-id"))
 
+    def test_derive_referral_code_is_stable_and_valid(self):
+        # کد از روی آیدی ساخته می‌شود؛ برای همان کاربر همیشه همان کد،
+        # با فرمت GOD + شش رقم، و برای کاربر دیگر کد دیگر.
+        code = pricing.derive_referral_code(278899906)
+        self.assertEqual(code, pricing.derive_referral_code(278899906))
+        self.assertEqual(code, pricing.derive_referral_code("278899906"))
+        self.assertTrue(code.startswith("GOD") and len(code) == 9)
+        self.assertTrue(pricing.is_valid_referral_code(code))
+        other = pricing.derive_referral_code(111)
+        self.assertNotEqual(code, other)
+        self.assertTrue(pricing.is_valid_referral_code(other))
+
 
 class StoreTest(unittest.TestCase):
     def setUp(self):
@@ -146,7 +158,13 @@ class StoreTest(unittest.TestCase):
     def test_referral_rules(self):
         referrer = self.store.ensure_user(100, "ref", "Ref")
         code = self.store.get_or_create_referral_code(100)
-        self.assertTrue(code.startswith("GOD") and len(code) == 7)
+        # کد مشتق‌شده از آیدی: GOD + شش رقم، و برای همان کاربر پایدار
+        self.assertEqual(code, pricing.derive_referral_code(100))
+        self.assertTrue(code.startswith("GOD") and len(code) == 9)
+        self.assertEqual(code, self.store.get_or_create_referral_code(100))
+        # کد تصادفی قدیمی به کد مشتق‌شده مهاجرت می‌کند
+        self.store.get_user(100)["referral_code"] = "GOD4821"
+        self.assertEqual(self.store.get_or_create_referral_code(100), code)
         # خودارجاعی رد می‌شود
         status, _ = self.store.record_referral_use(code, 100)
         self.assertEqual(status, "self")
@@ -165,6 +183,17 @@ class StoreTest(unittest.TestCase):
         self.assertTrue(self.store.get_user(100)["referral_credit"])
         # فعال‌سازی دوم همان دوست چیزی برنمی‌گرداند
         self.assertIsNone(self.store.activate_referral_for_friend(200))
+
+    def test_referral_code_collision_falls_back_to_random(self):
+        # اگر کد مشتق‌شده‌ی کاربر را کاربر دیگری گرفته باشد، کد تصادفی
+        # یکتا ساخته می‌شود (نه کدِ آن کاربر دیگر).
+        derived = pricing.derive_referral_code(100)
+        other = self.store.ensure_user(200, "other", "Other")
+        other["referral_code"] = derived
+        code = self.store.get_or_create_referral_code(100)
+        self.assertNotEqual(code, derived)
+        self.assertTrue(code.startswith("GOD"))
+        self.assertTrue(pricing.is_valid_referral_code(code))
 
     def test_auto_replies(self):
         self.store.add_auto_reply("سفارشم کی آماده می‌شه؟", "تا ۲۴ ساعت.")
@@ -548,6 +577,7 @@ class MenuAndAdminTest(unittest.TestCase):
         import json as _json
         button = _json.loads(data["menu_button"])
         self.assertEqual(button["type"], "web_app")
+        self.assertEqual(button["text"], "فروشگاه")
         self.assertEqual(button["web_app"]["url"], "https://example.invalid/app")
 
     def test_setup_menu_button_skipped_without_url(self):
@@ -597,13 +627,31 @@ class MenuAndAdminTest(unittest.TestCase):
     def test_admin_commands_button_shows_commands_keyboard(self):
         godstar.handle_message(self.store, self._admin_msg("📋 دستورهای ادمین"))
         self.assertTrue(any("دستورهای ادمین" in t for _, t, _ in self.sent))
+        list_text = [t for _, t, _ in self.sent if "دستورهای ادمین" in t][0]
+        # روی دکمه‌ها و در لیست، کلمه و کار دستور نوشته شده، نه خود دستور
+        self.assertNotIn("/", list_text)
         _, _, markup = self.sent[-1]
         texts = [b["text"] for row in markup["keyboard"] for b in row]
-        for cmd in ("/orders", "/approve", "/reject", "/codes", "/addcode",
-                    "/delcode", "/broadcast", "/stats", "/autoreplies",
-                    "/addreply", "/delreply"):
-            self.assertIn(cmd, texts)
+        for label in ("📦 سفارش‌های در انتظار", "✅ تایید سفارش",
+                      "❌ رد سفارش", "🎟 کدهای تخفیف",
+                      "➕ ساخت کد تخفیف", "🗑 حذف کد تخفیف",
+                      "📣 پیام همگانی", "📊 آمار",
+                      "💬 پاسخ‌های خودکار", "➕ ساخت پاسخ خودکار",
+                      "🗑 حذف پاسخ خودکار"):
+            self.assertIn(label, texts)
+        self.assertNotIn("/approve", texts)
         self.assertIn("🔙 بازگشت به منو", texts)
+
+    def test_admin_keyboard_label_runs_command(self):
+        # زدن برچسب فارسی، همان دستور را می‌فرستد (اینجا: پرسش شماره)
+        godstar.handle_message(self.store, self._admin_msg("✅ تایید سفارش"))
+        self.assertTrue(any("شماره سفارش" in t for _, t, _ in self.sent))
+
+    def test_start_creates_referral_code(self):
+        godstar.handle_message(self.store, self._admin_msg("/start"))
+        user = self.store.get_user(278899906)
+        self.assertEqual(user["referral_code"],
+                         pricing.derive_referral_code(278899906))
 
     def test_admin_commands_button_ignored_for_users(self):
         msg = {"chat": {"id": 111}, "from": {"id": 111},
