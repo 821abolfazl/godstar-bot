@@ -32,7 +32,7 @@ from pricing import (WALLET_ADDRESS, ads_price, member_price, bot_price,
                      compute_order_price, loyalty_eligible,
                      is_valid_channel_id, is_valid_referral_code)
 
-BOT_VERSION = "2026-11-24-0.5"   # فقط توی لاگ و برای ادمین در /start نوشته می‌شه
+BOT_VERSION = "2026-11-24-0.6"   # فقط توی لاگ و برای ادمین در /start نوشته می‌شه
 BOT_USERNAME = "GodStarServiceBot"
 WEBAPP_URL = os.environ.get("WEBAPP_URL") or "https://821abolfazl.github.io/godstar-bot/"
 
@@ -189,13 +189,30 @@ def setup_commands():
 
 
 # ---------- کیبوردها ----------
-def main_keyboard():
-    return {"keyboard": [
+def main_keyboard(is_admin=False):
+    keyboard = [
         [{"text": "🛍 خدمات", "web_app": {"url": WEBAPP_URL}},
          {"text": "📦 سفارش‌های من"}],
         [{"text": "👛 کیف پول من"}, {"text": "💬 پشتیبانی"}],
         [{"text": "🎁 کد معرفی من"}],
         [{"text": "🛍 باز کردن فروشگاه", "web_app": {"url": WEBAPP_URL}}],
+    ]
+    if is_admin:
+        keyboard.append([{"text": "📋 دستورهای ادمین"}])
+    return {"keyboard": keyboard, "resize_keyboard": True}
+
+
+def admin_keyboard():
+    """منوی دستورهای ادمین — با زدن دکمه‌ی «📋 دستورهای ادمین» در منوی
+    اصلی باز می‌شود؛ زدن هر دستور، همان دستور را می‌فرستد."""
+    return {"keyboard": [
+        [{"text": "/orders"}, {"text": "/approve"}],
+        [{"text": "/reject"}, {"text": "/codes"}],
+        [{"text": "/addcode"}, {"text": "/delcode"}],
+        [{"text": "/broadcast"}, {"text": "/stats"}],
+        [{"text": "/autoreplies"}, {"text": "/addreply"}],
+        [{"text": "/delreply"}],
+        [{"text": "🔙 بازگشت به منو"}],
     ], "resize_keyboard": True}
 
 
@@ -842,9 +859,50 @@ def _admin_only(chat_id):
     return True
 
 
+PROMPT_TIMEOUT_SEC = 600  # ۱۰ دقیقه برای جواب به پرسش آرگومان
+
+# دستورهایی که بدون آرگومان، ربات آرگومان را می‌پرسد
+PROMPT_FOR = {
+    "/approve": "شماره سفارش را بفرست (مثلاً GS-1001).",
+    "/reject": "شماره سفارش را بفرست (مثلاً GS-1001).",
+    "/delcode": "کد تخفیف را بفرست (مثلاً GOD20).",
+    "/broadcast": "متن پیام همگانی را بفرست.",
+    "/addcode": "کد و درصد را بفرست (مثلاً: GOD20 20). برای حداکثر مصرف، عدد سوم را هم بفرست (مثلاً: GOD20 20 50).",
+    "/addreply": "سؤال و جواب را با | از هم جدا کن (مثلاً: سفارشم کی می‌رسه؟ | تا ۲۴ ساعت بعد از تایید).",
+    "/delreply": "شماره پاسخ خودکار را بفرست.",
+}
+
+
+# متن لیست دستورهای ادمین — هم در جواب دستور ناشناخته، هم در منوی
+# دستورهای ادمین (دکمه‌ی «📋 دستورهای ادمین») استفاده می‌شود.
+ADMIN_COMMANDS_TEXT = (
+    "دستورهای ادمین:\n"
+    "/orders — سفارش‌های در انتظار\n"
+    "/approve <شماره> — تایید سفارش\n"
+    "/reject <شماره> — رد سفارش\n"
+    "/codes — لیست کدهای تخفیف\n"
+    "/addcode <CODE> <درصد> [حداکثر مصرف]\n"
+    "/delcode <CODE>\n"
+    "/broadcast <متن>\n"
+    "/stats — آمار\n"
+    "/autoreplies — پاسخ‌های خودکار\n"
+    "/addreply <سؤال> | <جواب>\n"
+    "/delreply <شماره>")
+
+
 def handle_admin_command(store, chat_id, text):
     parts = text.split()
     cmd = parts[0].lower()
+    # دستور بدون آرگومان: به‌جای نشان دادن دوباره‌ی لیست، آرگومان را
+    # می‌پرسیم؛ جواب در پیام بعدی می‌رسد (۱۰ دقیقه فرصت، «لغو» کنسل).
+    needs = {"/approve": 2, "/reject": 2, "/delcode": 2, "/broadcast": 2,
+             "/addcode": 3, "/addreply": 2, "/delreply": 2}
+    if cmd in needs and len(parts) < needs[cmd]:
+        store.state.setdefault("pending_prompt", {})[str(chat_id)] = {
+            "cmd": cmd, "at": time.time()}
+        store.dirty = True
+        send_message(chat_id, PROMPT_FOR[cmd] + "\nبرای لغو «لغو» را بفرست.")
+        return
     if cmd == "/orders":
         pending = store.list_pending_orders()
         if not pending:
@@ -934,19 +992,7 @@ def handle_admin_command(store, chat_id, text):
         except ValueError as ex:
             send_message(chat_id, f"⚠️ {ex}")
     else:
-        send_message(chat_id,
-                     "دستورهای ادمین:\n"
-                     "/orders — سفارش‌های در انتظار\n"
-                     "/approve <شماره> — تایید سفارش\n"
-                     "/reject <شماره> — رد سفارش\n"
-                     "/codes — لیست کدهای تخفیف\n"
-                     "/addcode <CODE> <درصد> [حداکثر مصرف]\n"
-                     "/delcode <CODE>\n"
-                     "/broadcast <متن>\n"
-                     "/stats — آمار\n"
-                     "/autoreplies — پاسخ‌های خودکار\n"
-                     "/addreply <سؤال> | <جواب>\n"
-                     "/delreply <شماره>")
+        send_message(chat_id, ADMIN_COMMANDS_TEXT)
 
 
 ADMIN_COMMANDS = {"/orders", "/approve", "/reject", "/codes", "/addcode",
@@ -988,6 +1034,10 @@ def handle_message(store, msg):
             store.save_if_dirty()
             return
 
+    if text.startswith("/"):
+        # دستور تازه، پرسش آرگومان قبلی را باطل می‌کند
+        if (store.state.get("pending_prompt") or {}).pop(str(chat_id), None) is not None:
+            store.dirty = True
     if text.startswith("/start"):
         param = text[len("/start"):].strip()
         if param and is_valid_referral_code(param):
@@ -1001,7 +1051,7 @@ def handle_message(store, msg):
                              "🎉 کد معرفی ثبت شد!\n" + REFERRAL_LINE + "\n" +
                              "۱۰٪ تخفیف روی اولین سفارشت اعمال می‌شود.")
         send_message(chat_id, welcome_text(is_admin(chat_id)),
-                     reply_markup=main_keyboard())
+                     reply_markup=main_keyboard(is_admin(chat_id)))
         store.save_if_dirty()
         return
 
@@ -1014,19 +1064,19 @@ def handle_message(store, msg):
             return
         if cmd == "/help":
             send_message(chat_id, welcome_text(is_admin(chat_id)),
-                         reply_markup=main_keyboard())
+                         reply_markup=main_keyboard(is_admin(chat_id)))
             return
         send_message(chat_id, "دستور شناخته نشد. از منوی پایین استفاده کن 🙂",
-                     reply_markup=main_keyboard())
+                     reply_markup=main_keyboard(is_admin(chat_id)))
         return
 
     # منوی اصلی
     if text == "🛍 خدمات":
-        send_message(chat_id, SERVICES_TEXT, reply_markup=main_keyboard())
+        send_message(chat_id, SERVICES_TEXT, reply_markup=main_keyboard(is_admin(chat_id)))
         return
     if text == "🛍 باز کردن فروشگاه":
         send_message(chat_id, "فروشگاه را از دکمه‌ی وب‌اپ باز کن 👆",
-                     reply_markup=main_keyboard())
+                     reply_markup=main_keyboard(is_admin(chat_id)))
         return
     if text == "📦 سفارش‌های من":
         send_my_orders(store, chat_id)
@@ -1061,7 +1111,7 @@ def handle_message(store, msg):
         return
     if text == "🔙 بازگشت به منو":
         store.set_support_mode(chat_id, False)
-        send_message(chat_id, "به منوی اصلی برگشتی 🙂", reply_markup=main_keyboard())
+        send_message(chat_id, "به منوی اصلی برگشتی 🙂", reply_markup=main_keyboard(is_admin(chat_id)))
         store.save_if_dirty()
         return
     if text == "🎁 کد معرفی من":
@@ -1086,6 +1136,39 @@ def handle_message(store, msg):
         send_message(chat_id, "\n".join(lines))
         store.save_if_dirty()
         return
+
+    # منوی دستورهای ادمین — فقط ادمین دکمه‌اش را می‌بیند؛ زدن هر دستور
+    # در آن منو، همان دستور را می‌فرستد (دستور بدون آرگومان، آرگومان
+    # را می‌پرسد).
+    if text == "📋 دستورهای ادمین" and is_admin(chat_id):
+        send_message(chat_id, ADMIN_COMMANDS_TEXT,
+                     reply_markup=admin_keyboard())
+        return
+
+    # جواب به پرسش آرگومان دستور ادمین (مثلاً شماره سفارش برای /approve)؛
+    # دکمه‌های منو بالاتر بررسی شده‌اند، پس زدن دکمه وسط پرسش، پرسش را
+    # از بین نمی‌برد (ادمین برای پیدا کردن شماره به آن‌ها نیاز دارد).
+    if is_admin(chat_id) and text and not text.startswith("/"):
+        prompt = (store.state.get("pending_prompt") or {}).get(str(chat_id))
+        if prompt:
+            if text == "لغو":
+                store.state["pending_prompt"].pop(str(chat_id), None)
+                store.dirty = True
+                send_message(chat_id, "لغو شد.")
+                store.save_if_dirty()
+                return
+            if time.time() - float(prompt.get("at") or 0) > PROMPT_TIMEOUT_SEC:
+                store.state["pending_prompt"].pop(str(chat_id), None)
+                store.dirty = True
+                send_message(chat_id, "زمان پاسخ تمام شد؛ دستور را دوباره بفرست.")
+                store.save_if_dirty()
+                return
+            cmd = prompt["cmd"]
+            store.state["pending_prompt"].pop(str(chat_id), None)
+            store.dirty = True
+            handle_admin_command(store, chat_id, f"{cmd} {text}")
+            store.save_if_dirty()
+            return
 
     # حالت پشتیبانی: متن/عکس مشتری → اول پاسخ خودکار، بعد فوروارد به ادمین
     if store.in_support_mode(chat_id):
@@ -1118,7 +1201,7 @@ def handle_message(store, msg):
         if reply:
             send_message(chat_id, reply["answer"])
             return
-    send_message(chat_id, "از منوی پایین انتخاب کن 🙂", reply_markup=main_keyboard())
+    send_message(chat_id, "از منوی پایین انتخاب کن 🙂", reply_markup=main_keyboard(is_admin(chat_id)))
 
 
 def handle_callback(store, query):
