@@ -1101,7 +1101,8 @@ class InitDataAndInboxTest(unittest.TestCase):
                                  "username": "t"}, ensure_ascii=False),
         }
         check = "\n".join(f"{k}={params[k]}" for k in sorted(params))
-        secret = hashlib.sha256((token or self.TOKEN).encode()).digest()
+        secret = _hmac.new(b"WebAppData", (token or self.TOKEN).encode(),
+                           hashlib.sha256).digest()
         params["hash"] = _hmac.new(secret, check.encode(),
                                    hashlib.sha256).hexdigest()
         return _up.urlencode(params)
@@ -1157,6 +1158,29 @@ class InitDataAndInboxTest(unittest.TestCase):
     def test_validate_init_data_wrong_token(self):
         init_data = self._make_init_data(111, token="other-token")
         self.assertIsNone(godstar.validate_init_data(init_data, self.TOKEN))
+
+    def test_validate_init_data_old_sha256_derivation_rejected(self):
+        # رگرسیون (v1.0.2): کلید مخفی HMAC-SHA256 توکن با کلید «WebAppData»
+        # است، نه SHA256 ساده‌ی توکن؛ داده‌ای که با روش قدیمی امضا شده
+        # باید رد شود (همین اشتباه باعث «ثبت نشد» برای همه‌ی initDataهای
+        # واقعی شده بود).
+        import hashlib as _hashlib
+        import hmac as _hmac2
+        import json as _json2
+        import time as _time2
+        import urllib.parse as _up2
+        params = {
+            "auth_date": str(int(_time2.time())),
+            "query_id": "AAHdF6IQAAAAAN0XohDhrOrc",
+            "user": _json2.dumps({"id": 111, "first_name": "Test",
+                                  "username": "t"}, ensure_ascii=False),
+        }
+        check = "\n".join(f"{k}={params[k]}" for k in sorted(params))
+        old_secret = _hashlib.sha256(self.TOKEN.encode()).digest()
+        params["hash"] = _hmac2.new(old_secret, check.encode(),
+                                    _hashlib.sha256).hexdigest()
+        self.assertIsNone(
+            godstar.validate_init_data(_up2.urlencode(params), self.TOKEN))
 
     def test_validate_init_data_empty(self):
         self.assertIsNone(godstar.validate_init_data("", self.TOKEN))
