@@ -377,6 +377,12 @@ class Store:
     def list_pending_orders(self):
         return self.list_orders(status="pending")
 
+    def list_users(self):
+        """همه‌ی کاربران، تازه‌ترین اول (بر اساس created_at)."""
+        users = list(self.state["users"].values())
+        users.sort(key=lambda u: u.get("created_at") or "", reverse=True)
+        return users
+
     def set_order_status(self, order_no, status):
         """تغییر وضعیت فقط از pending به confirmed/rejected مجاز است."""
         order = self.get_order(order_no)
