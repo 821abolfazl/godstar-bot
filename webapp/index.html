@@ -12,6 +12,7 @@
 
   <!-- ======================= MAIN ======================= -->
   <section class="screen active" id="screen-home">
+    <div class="main-head">
     <header class="topbar">
       <div class="logo">
         <span class="logo-star" aria-hidden="true">
@@ -26,13 +27,17 @@
       </div>
     </header>
 
-    <div class="notice-box gold hidden" id="send-blocked-banner">⚠️ برای ثبت سفارش، فروشگاه را از دکمه‌ی «🛍 باز کردن فروشگاه» در پایین گفتگو با ربات باز کن — از دکمه‌ی آبی منو نمی‌شود سفارش ثبت کرد.</div>
-
     <nav class="tabs" aria-label="ناوبری اصلی">
       <button class="tab active" data-nav="home" type="button">خدمات</button>
       <button class="tab" data-nav="orders" type="button">سفارش‌های من</button>
       <button class="tab" data-nav="support" type="button">پشتیبانی</button>
     </nav>
+    </div>
+
+    <div class="swipe" id="swipe-main">
+      <div class="swipe-track" id="swipe-track">
+      <div class="swipe-panel" data-panel="home">
+
 
     <div class="hero">
       <h1>رشد کانالت را<br>از اینجا شروع کن</h1>
@@ -95,9 +100,75 @@
       </div>
     </div>
     <p class="pay-note">پرداخت فقط با تتر (BEP20)</p>
+      </div>
+      <div class="swipe-panel" data-panel="orders">
+    
+
+    <div class="notice-box green">
+      <span class="notice-ico green-ico" aria-hidden="true">✓</span>
+      <span>هر تغییری در وضعیت سفارشت، با پیام بهت خبر داده می‌شود.</span>
+    </div>
+
+    <div id="orders-list"></div>
+
+    <div class="card loyalty-card">
+      <div class="loyalty-head"><b>تخفیف وفاداری</b><span class="amber-text">۲ از ۳ سفارش</span></div>
+      <p>بعد از ۳ سفارش، ۱۰٪ تخفیف می‌گیری</p>
+      <div class="progress"><span style="width:66%"></span></div>
+    </div>
+
+    <div class="support-block">
+      <h3>سوال داری؟</h3>
+      <p>درصورت نیاز به راهنمایی و مشاوره با پشتیبانی در ارتباط باشید</p>
+      <button class="link-pink" data-nav="support" type="button">ارتباط با پشتیبانی</button>
+    </div>
+    <p class="pay-note">پرداخت فقط با تتر (BEP20)</p>
+      </div>
+      <div class="swipe-panel" data-panel="support">
+    
+
+    <h3 class="block-title">سوال‌های پرتکرار</h3>
+    <div class="card faq-list" id="faq-list">
+      <div class="faq-item open">
+        <button class="faq-q" type="button"><span class="q-ico" aria-hidden="true">؟</span><b>سفارشم کی آماده می‌شه؟</b><span class="chev">‹</span></button>
+        <p class="faq-a">سفارش‌های ممبر و تبلیغات معمولاً تا ۲۴ ساعت بعد از تایید پرداخت انجام می‌شوند و نتیجه‌اش را با پیام بهت خبر می‌دهیم.</p>
+      </div>
+      <div class="faq-item">
+        <button class="faq-q" type="button"><span class="q-ico" aria-hidden="true">؟</span><b>چطور پرداخت کنم؟</b><span class="chev">‹</span></button>
+        <p class="faq-a">فقط با تتر (USDT) روی شبکه‌ی BEP20 به آدرسی که در صفحه‌ی پرداخت می‌بینی واریز کن و بعد عکس فیش یا کد هش تراکنش را همان‌جا ارسال کن.</p>
+      </div>
+      <div class="faq-item">
+        <button class="faq-q" type="button"><span class="q-ico" aria-hidden="true">؟</span><b>اگر سفارشم انجام نشد چه کار کنم؟</b><span class="chev">‹</span></button>
+        <p class="faq-a">نگران نباش؛ همین‌جا پیام بده یا با مدیریت در ارتباط باش تا وضعیت سفارشت را بررسی کنیم و اگر انجام نشد، مبلغ را برمی‌گردانیم.</p>
+      </div>
+    </div>
+
+    <h3 class="block-title">گفتگو با پشتیبانی</h3>
+    <div class="chat" id="chat-box"></div>
+
+    <button class="card contact-admin" id="btn-contact-admin" type="button">
+      <span class="svc-icon tint-pink" aria-hidden="true"><svg viewBox="0 0 24 24" width="22" height="22"><path fill="#EB5AA0" d="M12 12a4.5 4.5 0 1 0-4.5-4.5A4.5 4.5 0 0 0 12 12zm0 2c-3.6 0-7.5 1.8-7.5 4.2V20a1 1 0 0 0 1 1h13a1 1 0 0 0 1-1v-1.8C19.5 15.8 15.6 14 12 14z"/></svg></span>
+      <span class="svc-text"><b>ارتباط با مدیریت</b><small>پیام مستقیم به مدیریت گاد استار</small></span>
+      <span class="chev" aria-hidden="true">‹</span>
+    </button>
+
+    <div class="chat-input-bar">
+      <button class="attach-btn" id="btn-attach" type="button" aria-label="ارسال عکس">
+        <svg viewBox="0 0 24 24" width="20" height="20"><path fill="#EB5AA0" d="M4 5h16a1 1 0 0 1 1 1v12a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1zm3 4a2 2 0 1 0 0-4 2 2 0 0 0 0 4zm-2 7.2l3.5-3.5 3 3L16 11l5 5v1H5z"/></svg>
+      </button>
+      <input type="file" id="support-photo" accept="image/*" class="hidden-input">
+      <input type="text" id="support-input" placeholder="پیامت را بنویس..." autocomplete="off">
+      <button class="send-btn" id="btn-send-support" type="button" aria-label="ارسال">
+        <svg viewBox="0 0 24 24" width="18" height="18"><path fill="#fff" d="M3 11l18-8-8 18-2.5-7.5z"/></svg>
+      </button>
+    </div>
+    <p class="field-note center" id="support-photo-note"></p>
+      </div>
+      </div>
+    </div>
   </section>
 
-  <!-- ======================= ADS ======================= -->
+<!-- ======================= ADS ======================= -->
   <section class="screen" id="screen-ads">
     <header class="subhead">
       <button class="back-btn" data-back type="button" aria-label="بازگشت">›</button>
@@ -448,78 +519,6 @@
   </section>
 
   <!-- ======================= ORDERS ======================= -->
-  <section class="screen" id="screen-orders">
-    <header class="subhead">
-      <button class="back-btn" data-back type="button" aria-label="بازگشت">›</button>
-      <div><h2>سفارش‌های من</h2><p>پیگیری سفارش‌ها و تمدید اشتراک</p></div>
-    </header>
-
-    <div class="notice-box green">
-      <span class="notice-ico green-ico" aria-hidden="true">✓</span>
-      <span>هر تغییری در وضعیت سفارشت، با پیام بهت خبر داده می‌شود.</span>
-    </div>
-
-    <div id="orders-list"></div>
-
-    <div class="card loyalty-card">
-      <div class="loyalty-head"><b>تخفیف وفاداری</b><span class="amber-text">۲ از ۳ سفارش</span></div>
-      <p>بعد از ۳ سفارش، ۱۰٪ تخفیف می‌گیری</p>
-      <div class="progress"><span style="width:66%"></span></div>
-    </div>
-
-    <div class="support-block">
-      <h3>سوال داری؟</h3>
-      <p>درصورت نیاز به راهنمایی و مشاوره با پشتیبانی در ارتباط باشید</p>
-      <button class="link-pink" data-nav="support" type="button">ارتباط با پشتیبانی</button>
-    </div>
-    <p class="pay-note">پرداخت فقط با تتر (BEP20)</p>
-  </section>
-
-  <!-- ======================= SUPPORT ======================= -->
-  <section class="screen" id="screen-support">
-    <header class="subhead">
-      <button class="back-btn" data-back type="button" aria-label="بازگشت">›</button>
-      <div><h2>پشتیبانی</h2><p><span class="dot-green inline-dot" aria-hidden="true"></span>آنلاین — معمولاً در کمتر از یک ساعت جواب می‌دهیم</p></div>
-    </header>
-
-    <h3 class="block-title">سوال‌های پرتکرار</h3>
-    <div class="card faq-list" id="faq-list">
-      <div class="faq-item open">
-        <button class="faq-q" type="button"><span class="q-ico" aria-hidden="true">؟</span><b>سفارشم کی آماده می‌شه؟</b><span class="chev">‹</span></button>
-        <p class="faq-a">سفارش‌های ممبر و تبلیغات معمولاً تا ۲۴ ساعت بعد از تایید پرداخت انجام می‌شوند و نتیجه‌اش را با پیام بهت خبر می‌دهیم.</p>
-      </div>
-      <div class="faq-item">
-        <button class="faq-q" type="button"><span class="q-ico" aria-hidden="true">؟</span><b>چطور پرداخت کنم؟</b><span class="chev">‹</span></button>
-        <p class="faq-a">فقط با تتر (USDT) روی شبکه‌ی BEP20 به آدرسی که در صفحه‌ی پرداخت می‌بینی واریز کن و بعد عکس فیش یا کد هش تراکنش را همان‌جا ارسال کن.</p>
-      </div>
-      <div class="faq-item">
-        <button class="faq-q" type="button"><span class="q-ico" aria-hidden="true">؟</span><b>اگر سفارشم انجام نشد چه کار کنم؟</b><span class="chev">‹</span></button>
-        <p class="faq-a">نگران نباش؛ همین‌جا پیام بده یا با مدیریت در ارتباط باش تا وضعیت سفارشت را بررسی کنیم و اگر انجام نشد، مبلغ را برمی‌گردانیم.</p>
-      </div>
-    </div>
-
-    <h3 class="block-title">گفتگو با پشتیبانی</h3>
-    <div class="chat" id="chat-box"></div>
-
-    <button class="card contact-admin" id="btn-contact-admin" type="button">
-      <span class="svc-icon tint-pink" aria-hidden="true"><svg viewBox="0 0 24 24" width="22" height="22"><path fill="#EB5AA0" d="M12 12a4.5 4.5 0 1 0-4.5-4.5A4.5 4.5 0 0 0 12 12zm0 2c-3.6 0-7.5 1.8-7.5 4.2V20a1 1 0 0 0 1 1h13a1 1 0 0 0 1-1v-1.8C19.5 15.8 15.6 14 12 14z"/></svg></span>
-      <span class="svc-text"><b>ارتباط با مدیریت</b><small>پیام مستقیم به مدیریت گاد استار</small></span>
-      <span class="chev" aria-hidden="true">‹</span>
-    </button>
-
-    <div class="chat-input-bar">
-      <button class="attach-btn" id="btn-attach" type="button" aria-label="ارسال عکس">
-        <svg viewBox="0 0 24 24" width="20" height="20"><path fill="#EB5AA0" d="M4 5h16a1 1 0 0 1 1 1v12a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1zm3 4a2 2 0 1 0 0-4 2 2 0 0 0 0 4zm-2 7.2l3.5-3.5 3 3L16 11l5 5v1H5z"/></svg>
-      </button>
-      <input type="file" id="support-photo" accept="image/*" class="hidden-input">
-      <input type="text" id="support-input" placeholder="پیامت را بنویس..." autocomplete="off">
-      <button class="send-btn" id="btn-send-support" type="button" aria-label="ارسال">
-        <svg viewBox="0 0 24 24" width="18" height="18"><path fill="#fff" d="M3 11l18-8-8 18-2.5-7.5z"/></svg>
-      </button>
-    </div>
-    <p class="field-note center" id="support-photo-note"></p>
-  </section>
-
   <!-- ======================= SUCCESS ======================= -->
   <section class="screen" id="screen-success">
     <div class="success-wrap">
