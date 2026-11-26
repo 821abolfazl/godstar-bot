@@ -76,6 +76,7 @@ def _empty_state():
         "auto_reply_seq": 0, "tg_offset": 0,
         "support_mode": {},   # str(chat_id) -> True (کاربر در حالت پشتیبانی است)
         "pending_prompt": {},  # str(chat_id) -> {"cmd", "at"} (پرسش آرگومان دستور ادمین)
+        "pending_reject": {},  # str(admin chat_id) -> {"order_no", "at"} (رد در انتظار دلیل)
     }
 
 
@@ -153,6 +154,24 @@ class Store:
         except Exception as ex:
             raise RuntimeError(f"supabase unreachable (network?): {type(ex).__name__}") from ex
         r.raise_for_status()
+
+    # ---------- صندوق ورودی مینی‌اپ (نسخه‌ی ۱٫۰) ----------
+    def fetch_inbox_rows(self):
+        """ردیف‌های صندوق وب‌اپ را می‌خواند (مرتب بر اساس زمان ساخت).
+
+        جدول گذراست و در load/save نمی‌آید؛ فقط Edge Function در آن
+        می‌نویسد و ربات می‌خواند و حذف می‌کند. بدون سوپابیس خالی است.
+        """
+        if not self.supabase_enabled():
+            return []
+        rows = self._sb_get_all("webapp_inbox")
+        rows.sort(key=lambda r: r.get("created_at") or "")
+        return rows
+
+    def delete_inbox_row(self, row_id):
+        if not self.supabase_enabled():
+            return
+        self._sb_delete("webapp_inbox", "id", row_id)
 
     # ---------- بارگذاری / ذخیره ----------
     def load(self):
