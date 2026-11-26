@@ -35,7 +35,7 @@ from pricing import (WALLET_ADDRESS, ads_price, member_price, bot_price,
                      compute_order_price, loyalty_eligible,
                      is_valid_channel_id, is_valid_referral_code)
 
-BOT_VERSION = "2026-11-26-1.0.1"   # فقط توی لاگ و برای ادمین در /start نوشته می‌شه
+BOT_VERSION = "2026-11-26-1.0.2"   # فقط توی لاگ و برای ادمین در /start نوشته می‌شه
 BOT_USERNAME = "GodStarShopBot"  # ربات اصلی؛ هرگز GodStarServiceBot (بازنشسته) نیست
 WEBAPP_URL = os.environ.get("WEBAPP_URL") or "https://821abolfazl.github.io/godstar-bot/"
 
@@ -131,8 +131,9 @@ def validate_init_data(init_data, token, max_age_sec=86400, now=None):
     """initData تلگرام را دقیقاً مثل مستندات تلگرام اعتبارسنجی می‌کند.
 
     رشته‌ی بررسی از همه‌ی پارامترها به‌جز hash ساخته می‌شود (مرتب‌شده
-    بر اساس کلید، «key=value» با «\n»): کلید مخفی = SHA256 توکن ربات و
-    HMAC-SHA256 آن باید با hash برابر باشد؛ auth_date هم نباید بیش از
+    بر اساس کلید، «key=value» با «\n»): کلید مخفی = HMAC-SHA256 توکن
+    با کلید ثابت «WebAppData» (مستندات تلگرام — نه SHA256 ساده‌ی توکن)
+    و HMAC-SHA256 آن باید با hash برابر باشد؛ auth_date هم نباید بیش از
     ۲۴ ساعت قدیمی باشد. خروجی: dict کاربر (user.id) یا None.
     Edge Function همین الگوریتم را در TypeScript پیاده کرده است.
     """
@@ -153,7 +154,7 @@ def validate_init_data(init_data, token, max_age_sec=86400, now=None):
     if auth_date <= 0 or now - auth_date > max_age_sec:
         return None
     check_string = "\n".join(f"{k}={pairs[k]}" for k in sorted(pairs))
-    secret = hashlib.sha256(token.encode()).digest()
+    secret = hmac.new(b"WebAppData", token.encode(), hashlib.sha256).digest()
     computed = hmac.new(secret, check_string.encode(), hashlib.sha256).hexdigest()
     if not hmac.compare_digest(computed, received_hash.lower()):
         return None
