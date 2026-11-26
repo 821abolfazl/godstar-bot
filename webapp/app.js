@@ -14,13 +14,14 @@
  * The bot then asks the user IN THE BOT CHAT to send the photo as a normal
  * Telegram photo message, and matches it to the order/request by order
  * number (or by user id). The success screen tells the user exactly that.
- * EXCEPTION — support photos (v1.0.4) and receipt photos (v1.0.5): the
- * picked photo IS downscaled (max 1280px, JPEG) and sent with the
- * payload as `photo_data` / `receipt_photo_data`, so the admin actually
- * sees the photo; the bot forwards it with sendPhoto. Ad media still
- * stays metadata-only.
- * The file is still previewed locally (object URL) so the user sees what
- * they picked.
+ * EXCEPTION — support photos (v1.0.4), receipt photos (v1.0.5) and ad
+ * media (v1.0.6): the picked photo IS downscaled (max 1280px, JPEG)
+ * and sent with the payload as `photo_data` / `receipt_photo_data` /
+ * `ad_media_data`, so the admin actually sees the photo; the bot
+ * forwards it with sendPhoto. An ad video is sent as a base64 data URL
+ * when it is at most 4 MB, otherwise only its name goes and the bot
+ * asks for it in the chat. The file is still previewed locally
+ * (object URL) so the user sees what they picked.
  *
  * --- Telegram API use ---
  * ready() + expand() on load. BackButton drives in-app back navigation
@@ -54,7 +55,10 @@
  *                receipt_file_name, receipt_file_size,
  *                receipt_photo_data (downscaled data URL or null),
  *                ...service fields: ads->{views, media, ad_text,
- *                target_channels, media_file_name};
+ *                target_channels, media_file_name,
+ *                ad_media_data (photo: downscaled data URL; video:
+ *                base64 data URL up to 4 MB; null otherwise),
+ *                ad_media_kind:"photo"|"video"};
  *                members->{quantity};
  *                bot->{bot_type:"management"|"custom", plan_months,
  *                plan_price_usdt, notes}}
@@ -65,9 +69,13 @@
  * support_message: {type:"support_message", to:"support"|"admin",
  *                text, has_photo, photo_file_name, photo_file_size,
  *                photo_data (downscaled data URL or null)}
- * Discount codes are validated client-side for FORMAT only (and the demo
- * code GOD10 = 10% is applied locally for display). A well-formed code
- * that is not in the demo map is NEVER called invalid here — the server
+ * Discount codes are checked server-side with the «ثبت» button
+ * (Edge Function action «check-code», same rules the bot applies at
+ * submit: the code exists and is active, its uses are not exhausted,
+ * and this user has not used it before). The checked percent is shown
+ * in the summary right away; the bot still re-validates at submit and
+ * stays the authority. In demo mode the demo code GOD10 = 10% is
+ * applied locally for display.
  * (bot) validates it at submit and applies it if it is real. The SERVER
  * recomputes the discount and the payable amount; never trust the
  * client-side numbers.
@@ -223,7 +231,7 @@ var navStack = ["home"];
    پول، موفقیت) اینجا صفحه‌اند. */
 var SCREEN_IDS = { home: "screen-home", ads: "screen-ads", member: "screen-member",
   bot: "screen-bot", payment: "screen-payment", wallet: "screen-wallet",
-  success: "screen-success" };
+  success: "screen-success", "order-detail": "screen-order-detail" };
 
 /* پنل‌های اصلی: 0 خدمات، 1 سفارش‌های من، 2 پشتیبانی. در چیدمان راست‌به‌چپ
    پنل بعدی سمت چپ است؛ پس برای دیدنش تراک باید به راست بلغزد
@@ -247,11 +255,16 @@ function setPanel(i, animate) {
   if (changed) window.scrollTo(0, 0);
   /* باز کردن پنل سفارش‌ها، داده‌ی واقعی را تازه می‌کند و تا وقتی روی
      این پنل هستیم هر ۱۵ ثانیه تازه می‌شود تا تغییر وضعیت هم همان‌جا
-     دیده شود؛ بیرون آمدن از پنل، تازه‌سازی خودکار را قطع می‌کند. */
-  if (PANELS[currentPanel] === "orders") {
+     دیده شود؛ بیرون آمدن از پنل، تازه‌سازی خودکار را قطع می‌کند.
+     فقط وقتی پنل واقعاً عوض شده تازه می‌شود — زدن روی صفحه (که
+     touchend سوایپ آن را setPanel با همان پنل صدا می‌زند) نباید
+     لیست را از نو بسازد، وگرنه دکمه‌ای که کاربر زده زیر انگشتش
+     نابود می‌شود و ضربه‌اش گم می‌شود (دکمه‌ی «دوباره» در ۱٫۰٫۵
+     همین‌طور بی‌اثر مانده بود). */
+  if (changed && PANELS[currentPanel] === "orders") {
     if (!DEMO) loadMyData();
     startOrdersPolling(15000, 0);
-  } else {
+  } else if (PANELS[currentPanel] !== "orders") {
     stopOrdersPolling();
   }
 }
@@ -283,7 +296,10 @@ function bindSwipe() {
   }, { passive: false });
   function endSwipe(e) {
     track.classList.remove("no-anim");
-    if (!dragging) { setPanel(currentPanel); return; }
+    /* ضربه‌ی ساده (بدون کشیدن) پنل را عوض نمی‌کند و نباید setPanel
+       صدا بزند — فقط انیمیشن را برمی‌گردانیم تا ضربه به دکمه‌های
+       داخل پنل (مثل «دوباره») سالم برسد. */
+    if (!dragging) { return; }
     var dx = e.changedTouches[0].clientX - startX;
     var w = el.clientWidth;
     var threshold = Math.max(60, w * 0.2);
@@ -653,7 +669,8 @@ function bindBot() {
 }
 
 /* ---------------- PAYMENT ---------------- */
-var payState = { discountCode: "", discount: 0, receiptKind: "photo", receiptFile: null };
+var payState = { discountCode: "", discount: 0, discountChecked: "",
+                 receiptKind: "photo", receiptFile: null };
 var DEMO_DISCOUNTS = { "GOD10": 0.10 }; /* display-only; the bot recomputes */
 
 function payPayable() {
@@ -698,31 +715,101 @@ function renderPayment() {
     $("pay-note").textContent = "برای ثبت نهایی، رسید یا کد هش را ارسال کن";
   }
 }
-function applyDiscountCode() {
-  var raw = $("discount-code").value.trim().toUpperCase();
-  /* client-side format check only: 3-12 Latin letters/digits */
-  var okFormat = /^[A-Z0-9]{3,12}$/.test(raw);
+var DISCOUNT_REASONS = {
+  invalid: "این کد معتبر نیست.",
+  used_up: "ظرفیت این کد تمام شده است.",
+  already_used: "شما قبلاً از این کد استفاده کرده‌اید."
+};
+function resetDiscount() {
+  payState.discountCode = "";
+  payState.discount = 0;
+  payState.discountChecked = "";
   var note = $("discount-invalid");
   note.classList.add("hidden");
-  if (raw === "") { payState.discountCode = ""; payState.discount = 0; renderPayment(); return; }
-  if (!okFormat) {
-    payState.discountCode = raw; payState.discount = 0;
-    note.textContent = "این کد معتبر نیست.";
+  note.textContent = "";
+  renderPayment();
+}
+function applyDiscountResult(code, data) {
+  /* نتیجه‌ی بررسی کد را در خلاصه‌ی پرداخت نشان می‌دهد. */
+  var note = $("discount-invalid");
+  if (data && data.valid) {
+    var percent = Number(data.percent) || 0;
+    payState.discountCode = code;
+    payState.discountChecked = code;
+    payState.discount = pendingOrder ? pendingOrder.amount * percent / 100 : 0;
+    note.textContent = "کد اعمال شد: " + fa(percent) + "٪ تخفیف.";
     note.classList.remove("hidden");
-    renderPayment(); return;
-  }
-  payState.discountCode = raw;
-  var rate = DEMO_DISCOUNTS[raw];
-  payState.discount = (rate && pendingOrder) ? pendingOrder.amount * rate : 0;
-  if (!rate) {
-    /* کدِ درست‌قالب ولی ناشناخته برای نمایش نیست: فقط GOD10 اینجا
-       شناخته می‌شود و بقیه‌ی کدها را ربات هنگام ثبت بررسی می‌کند و
-       اگر معتبر باشند همان‌جا اعمال می‌شوند — «نامعتبر» گفتن به
-       کد معتبر (مثل GOD5) دروغ است. */
-    note.textContent = "کد وارد شد؛ هنگام ثبت بررسی و اعمال می‌شود.";
+  } else {
+    payState.discountCode = code;
+    payState.discountChecked = "";
+    payState.discount = 0;
+    note.textContent = DISCOUNT_REASONS[(data && data.reason) || "invalid"] ||
+      DISCOUNT_REASONS.invalid;
     note.classList.remove("hidden");
   }
   renderPayment();
+}
+function postFunction(body) {
+  /* یک فراخوانی به Edge Function با مهلت ۲۰ ثانیه‌ای؛ خروجی JSON
+     یا null اگر شبکه/سرور جواب نداد. */
+  if (DEMO) return Promise.resolve(null);
+  var controller = (typeof AbortController !== "undefined") ? new AbortController() : null;
+  var timer = null;
+  if (controller) {
+    timer = setTimeout(function () { try { controller.abort(); } catch (e) {} }, SUBMIT_TIMEOUT_MS);
+  }
+  return fetch(FUNCTION_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+    signal: controller ? controller.signal : undefined
+  }).then(function (res) {
+    if (timer) clearTimeout(timer);
+    if (!res.ok) throw new Error("http " + res.status);
+    return res.json();
+  }).catch(function (err) {
+    if (timer) clearTimeout(timer);
+    console.log("[GodStar] function call failed:", err);
+    return null;
+  });
+}
+function checkDiscountCode() {
+  /* دکمه‌ی «ثبت» کنار کد تخفیف: وضعیت کد همان لحظه معلوم می‌شود —
+     کد را سمت سرور بررسی می‌کند (همان قانون‌های ربات هنگام ثبت) و
+     درصد تخفیف را همان‌جا در خلاصه نشان می‌دهد. */
+  var raw = $("discount-code").value.trim().toUpperCase();
+  var note = $("discount-invalid");
+  var btn = $("discount-apply");
+  if (raw === "") { resetDiscount(); return; }
+  if (!/^[A-Z0-9]{3,12}$/.test(raw)) {
+    applyDiscountResult(raw, { valid: false, reason: "invalid" });
+    return;
+  }
+  if (raw === payState.discountChecked) return Promise.resolve(); /* همین کد همین حالا بررسی شده */
+  if (btn) { btn.disabled = true; btn.textContent = "…"; }
+  if (DEMO) {
+    var rate = DEMO_DISCOUNTS[raw];
+    applyDiscountResult(raw, rate ? { valid: true, percent: rate * 100 }
+                                  : { valid: false, reason: "invalid" });
+    if (btn) { btn.disabled = false; btn.textContent = "ثبت"; }
+    return Promise.resolve();
+  }
+  return postFunction({ action: "check-code", initData: tg ? tg.initData : "", code: raw })
+    .then(function (data) {
+      if (btn) { btn.disabled = false; btn.textContent = "ثبت"; }
+      if (!data || !data.ok) {
+        /* بررسی ممکن نشد (شبکه/سرور): دروغ نمی‌گوییم و کد را
+           «نامعتبر» نمی‌خوانیم — ربات هنگام ثبت بررسی می‌کند. */
+        payState.discountCode = raw;
+        payState.discountChecked = "";
+        payState.discount = 0;
+        note.textContent = "بررسی کد ممکن نشد؛ هنگام ثبت بررسی و اعمال می‌شود.";
+        note.classList.remove("hidden");
+        renderPayment();
+        return;
+      }
+      applyDiscountResult(raw, data);
+    });
 }
 function openPayment(order) {
   pendingOrder = order;
@@ -742,7 +829,7 @@ function openPayment(order) {
   $("pay-hash-wrap").classList.add("hidden");
   $("pay-upload-preview").classList.add("hidden");
   $("pay-upload-label").textContent = "عکس فیش را برای بارگذاری انتخاب کن";
-  applyDiscountCode();
+  resetDiscount();
   renderPayment();
   showScreen("payment");
 }
@@ -751,7 +838,19 @@ function bindPayment() {
   /* re-render once a receipt file is picked (bindFilePreview has no hook,
      so listen on the same input again) */
   $("pay-receipt-file").addEventListener("change", function () { renderPayment(); });
-  $("discount-code").addEventListener("input", applyDiscountCode);
+  /* تایپ کردن کد، تخفیف بررسی‌شده‌ی قبلی را باطل می‌کند تا مبلغ
+     خلاصه با کد تازه نخواند؛ بررسی تازه با دکمه‌ی «ثبت» انجام می‌شود. */
+  $("discount-code").addEventListener("input", function () {
+    var raw = $("discount-code").value.trim().toUpperCase();
+    payState.discountCode = raw;
+    if (raw !== payState.discountChecked) {
+      payState.discount = 0;
+      payState.discountChecked = "";
+      $("discount-invalid").classList.add("hidden");
+      renderPayment();
+    }
+  });
+  $("discount-apply").addEventListener("click", function () { haptic("light"); checkDiscountCode(); });
   $all("#pay-receipt input").forEach(function (r) {
     r.addEventListener("change", function () {
       payState.receiptKind = r.value; haptic("selection");
@@ -769,11 +868,26 @@ function bindPayment() {
     var walletPay = $("pay-from-wallet").checked &&
       (!walletKnown || walletBalance >= payPayable()) && pendingOrder.amount > 0;
     /* عکس رسید (اگر انتخاب شده) اول کوچک می‌شود و با سفارش فرستاده
-       می‌شود تا ادمین همان لحظه آن را ببیند (مثل عکس پشتیبانی). */
+       می‌شود تا ادمین همان لحظه آن را ببیند (مثل عکس پشتیبانی).
+       عکس/فیلم تبلیغ هم همین‌جا آماده می‌شود: عکس کوچک می‌شود و
+       فیلم تا ۴ مگابایت خوانده می‌شود تا ادمین رسانه‌ی تبلیغ را هم
+       همان لحظه ببیند. */
     var receiptFile = (!walletPay && payState.receiptKind === "photo")
       ? payState.receiptFile.file : null;
     $("pay-submit").disabled = true;
-    downscalePhoto(receiptFile).then(function (dataUrl) {
+    var mediaFile = (pendingOrder.service === "ads" && adsState.mediaFile)
+      ? adsState.mediaFile.file : null;
+    var mediaPromise;
+    if (pendingOrder.service === "ads" && pendingOrder.media === "photo") {
+      mediaPromise = downscalePhoto(mediaFile);
+    } else if (pendingOrder.service === "ads" && pendingOrder.media === "video") {
+      mediaPromise = readFileAsDataURL(mediaFile, VIDEO_MAX_BYTES);
+    } else {
+      mediaPromise = Promise.resolve(null);
+    }
+    Promise.all([downscalePhoto(receiptFile), mediaPromise]).then(function (results) {
+      var dataUrl = results[0];
+      var mediaData = results[1];
       var payload = {
         type: "order",
         service: pendingOrder.service,
@@ -799,6 +913,8 @@ function bindPayment() {
         payload.ad_text = pendingOrder.ad_text;
         payload.target_channels = pendingOrder.target_channels || null;
         payload.media_file_name = pendingOrder.media_file_name;
+        payload.ad_media_data = mediaData;
+        payload.ad_media_kind = mediaData ? pendingOrder.media : null;
       } else if (pendingOrder.service === "members") {
         payload.quantity = pendingOrder.quantity;
       } else if (pendingOrder.service === "bot") {
@@ -814,6 +930,10 @@ function bindPayment() {
             ? "عکس فیش همراه سفارش فرستاده شد؛ نتیجه‌ی بررسی را با پیام بهت خبر می‌دهیم."
             : "عکس فیش را در گفتگو با ربات (@" + BOT_USERNAME + ") ارسال کن تا سفارشت تایید شود.")
           : "نتیجه‌ی بررسی پرداخت را با پیام بهت خبر می‌دهیم.");
+      if (pendingOrder.service === "ads" && pendingOrder.media !== "none" && !mediaData) {
+        var mediaLabel = pendingOrder.media === "photo" ? "عکس" : "فیلم";
+        note += " " + mediaLabel + " تبلیغ را هم در گفتگو با ربات بفرست.";
+      }
       submitPayload(payload).then(function (ok) {
         if (!ok) { submitFailed("pay"); renderPayment(); return; }
         /* سفارش همان لحظه در «سفارش‌های من» دیده شود؛ تا ۶۰ ثانیه هر
@@ -944,6 +1064,9 @@ function renderOrders(list) {
   list.forEach(function (o) {
     var row = document.createElement("div");
     row.className = "order-row";
+    /* زدن روی ردیف، جزئیات همان سفارش را نشان می‌دهد؛ دکمه‌های
+       داخل ردیف (تمدید/دوباره) ضربه را نگه می‌دارند. */
+    row.addEventListener("click", function () { haptic("light"); showOrderDetail(o); });
     var icon = document.createElement("span");
     icon.innerHTML = SERVICE_ICONS[o.service] || SERVICE_ICONS.ads;
     var main = document.createElement("div");
@@ -959,15 +1082,26 @@ function renderOrders(list) {
     if (o.renew) {
       var r = document.createElement("button");
       r.type = "button"; r.className = "renew-link"; r.textContent = "تمدید";
-      r.addEventListener("click", function () { haptic("light"); showScreen("bot"); });
+      r.addEventListener("click", function (e) {
+        if (e) e.stopPropagation();
+        haptic("light"); showScreen("bot");
+      });
       main.appendChild(r);
     }
     if (o.order_no && o.canReorder) {
       var rb = document.createElement("button");
       rb.type = "button"; rb.className = "renew-link"; rb.textContent = "🔁 دوباره";
-      rb.addEventListener("click", function () {
+      rb.addEventListener("click", function (e) {
+        if (e) e.stopPropagation(); /* ضربه به دکمه، ردیف را باز نکند */
         haptic("light");
+        /* بازخورد فوری: دکمه همان لحظه‌ی ضربه غیرفعال و «در حال ثبت…»
+           می‌شود تا کاربر ببیند ضربه‌اش رسیده؛ پیش از این ضربه بی‌صدا
+           می‌ماند و معلوم نبود رسیده یا نه. */
+        rb.disabled = true;
+        rb.textContent = "در حال ثبت…";
         submitPayload({ type: "reorder", order_no: o.order_no }).then(function (ok) {
+          rb.disabled = false;
+          rb.textContent = "🔁 دوباره";
           if (!ok) { submitFailed(); return; }
           addPendingOrder({
             service: o.service,
@@ -1002,6 +1136,14 @@ var SERVICE_TITLES = { ads: "تبلیغات Ads تلگرام", members: "خری�
 var ORDER_STATUS_LABELS = { pending: "در انتظار تایید", confirmed: "تایید شد", rejected: "رد شد" };
 var ORDER_STATUS_CLASSES = { pending: "amber", confirmed: "green", rejected: "red" };
 
+function formatDateTime(iso) {
+  try {
+    var created = new Date(iso);
+    return created.toLocaleDateString("fa-IR") + "، " +
+      created.toLocaleTimeString("fa-IR", { hour: "2-digit", minute: "2-digit" });
+  } catch (e) { return ""; }
+}
+
 function mapRealOrders(real) {
   /* ردیف‌های my-data را به شکل نمایشی renderOrders تبدیل می‌کند. */
   return real.map(function (o) {
@@ -1015,8 +1157,7 @@ function mapRealOrders(real) {
     if (o.status === "rejected" && d.reject_reason) {
       sub += (sub ? " — " : "") + "دلیل رد: " + d.reject_reason;
     }
-    var dateStr = "";
-    try { dateStr = new Date(o.created_at).toLocaleDateString("fa-IR"); } catch (e) {}
+    var dateStr = formatDateTime(o.created_at);
     return {
       service: o.service,
       title: SERVICE_TITLES[o.service] || o.service,
@@ -1027,10 +1168,69 @@ function mapRealOrders(real) {
       meta: o.order_no + " — " + faTether(o.amount) + (dateStr ? " — " + dateStr : ""),
       order_no: o.order_no,
       canReorder: o.type === "order" &&
-        (o.service === "ads" || o.service === "members" || o.service === "bot")
+        (o.service === "ads" || o.service === "members" || o.service === "bot"),
+      raw: o
     };
   });
 }
+/* ---------------- جزئیات سفارش ---------------- */
+function showOrderDetail(mapped) {
+  var raw = mapped.raw || {};
+  var d = raw.details || {};
+  var box = $("order-detail-body");
+  box.innerHTML = "";
+  var card = document.createElement("div");
+  card.className = "card summary-box";
+  function addRow(label, value, cls) {
+    if (value === null || value === undefined || value === "") return;
+    var row = document.createElement("div");
+    row.className = "sum-row";
+    var s = document.createElement("span"); s.textContent = label + ":";
+    var b = document.createElement("b"); b.textContent = value;
+    if (cls) b.className = cls;
+    row.appendChild(s); row.appendChild(b);
+    card.appendChild(row);
+  }
+  var title = document.createElement("b");
+  title.textContent = mapped.title || "";
+  var sub = document.createElement("small");
+  sub.textContent = mapped.sub || "";
+  card.appendChild(title); card.appendChild(sub);
+  var hr = document.createElement("hr"); hr.className = "divider";
+  card.appendChild(hr);
+  if (raw.order_no) addRow("شماره سفارش", raw.order_no);
+  addRow("وضعیت", mapped.statusLabel || raw.status || "");
+  if (raw.status === "rejected" && d.reject_reason) {
+    addRow("دلیل رد", d.reject_reason);
+  }
+  var amount = (raw.amount !== undefined && raw.amount !== null) ? raw.amount : mapped.amount;
+  if (amount !== undefined && amount !== null) addRow("مبلغ", faTether(amount));
+  if (raw.discount_kind) {
+    var kindLabel = { loyalty: "وفاداری", referral: "معرفی", code: "کد تخفیف" }[raw.discount_kind] || "";
+    addRow("تخفیف" + (kindLabel ? " (" + kindLabel + ")" : ""),
+      fa(raw.discount_amount || 0) + " تتر−" +
+      (raw.discount_percent ? " (" + fa(raw.discount_percent) + "٪)" : ""), "green-text");
+  }
+  if (raw.paid_by_wallet) addRow("پرداخت", "از کیف پول");
+  if (raw.tx_hash) addRow("هش تراکنش", raw.tx_hash);
+  if (raw.receipt_file_id) addRow("رسید", "عکس رسید ارسال شده است");
+  if (d.views) addRow("بازدید", fa(d.views));
+  if (d.count) addRow("تعداد", fa(d.count));
+  if (d.plan) addRow("پلن", d.plan);
+  if (d.channel_id) addRow("کانال", d.channel_id);
+  if (d.ad_text) addRow("متن تبلیغ", d.ad_text);
+  if (d.target_channels) addRow("کانال‌های هدف", d.target_channels);
+  if (d.description) addRow("توضیحات", d.description);
+  if (d.media && d.media !== "none") {
+    addRow("رسانه‌ی تبلیغ", (d.media === "photo" ? "عکس" : "ویدیو") +
+      (d.ad_media_file_id ? " (ارسال شد)" : " (در چت فرستاده می‌شود)"));
+  }
+  if (d.receipt_file_name) addRow("فایل رسید", d.receipt_file_name);
+  if (raw.created_at) addRow("تاریخ ثبت", formatDateTime(raw.created_at));
+  box.appendChild(card);
+  showScreen("order-detail");
+}
+
 /* ---------------- سفارش‌های زنده: سفارش تازه همان لحظه در «سفارش‌های من» -----
    سفارش از وب‌اپ که ثبت می‌شود، ربات آن را تا ~۱۰ ثانیه بعد از جدول
    webapp_inbox می‌خواند و می‌سازد؛ پس «سفارش‌های من» اگر فقط موقع باز
@@ -1221,6 +1421,22 @@ function downscalePhoto(file) {
           img.src = reader.result;
         } catch (e) { resolve(null); }
       };
+      reader.readAsDataURL(file);
+    } catch (e) { resolve(null); }
+  });
+}
+/* فیلم تبلیغ (تا ۴ مگابایت) را همان‌طور که هست به data URL تبدیل
+   می‌کند تا همراه سفارش به ادمین برسد؛ بزرگ‌تر از آن null برمی‌گردد
+   و فقط نام فیلم فرستاده می‌شود (ربات در چت از مشتری می‌خواهد). */
+var VIDEO_MAX_BYTES = 4 * 1024 * 1024;
+function readFileAsDataURL(file, maxBytes) {
+  return new Promise(function (resolve) {
+    try {
+      if (!file || !file.size || file.size > maxBytes) { resolve(null); return; }
+      if (typeof FileReader === "undefined") { resolve(null); return; }
+      var reader = new FileReader();
+      reader.onerror = function () { resolve(null); };
+      reader.onload = function () { resolve(reader.result); };
       reader.readAsDataURL(file);
     } catch (e) { resolve(null); }
   });
