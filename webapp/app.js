@@ -14,9 +14,11 @@
  * The bot then asks the user IN THE BOT CHAT to send the photo as a normal
  * Telegram photo message, and matches it to the order/request by order
  * number (or by user id). The success screen tells the user exactly that.
- * EXCEPTION — support photos (v1.0.4): the picked photo IS downscaled
- * (max 1280px, JPEG) and sent with the message as `photo_data`, so the
- * admin actually sees the photo; the bot forwards it with sendPhoto.
+ * EXCEPTION — support photos (v1.0.4) and receipt photos (v1.0.5): the
+ * picked photo IS downscaled (max 1280px, JPEG) and sent with the
+ * payload as `photo_data` / `receipt_photo_data`, so the admin actually
+ * sees the photo; the bot forwards it with sendPhoto. Ad media still
+ * stays metadata-only.
  * The file is still previewed locally (object URL) so the user sees what
  * they picked.
  *
@@ -50,6 +52,7 @@
  *                discount_usdt, payable_usdt, pay_from_wallet,
  *                receipt_kind:"photo"|"hash"|null, receipt_hash,
  *                receipt_file_name, receipt_file_size,
+ *                receipt_photo_data (downscaled data URL or null),
  *                ...service fields: ads->{views, media, ad_text,
  *                target_channels, media_file_name};
  *                members->{quantity};
@@ -57,13 +60,15 @@
  *                plan_price_usdt, notes}}
  * wallet_charge: {type:"wallet_charge", amount_usdt,
  *                receipt_kind, receipt_hash, receipt_file_name,
- *                receipt_file_size}
+ *                receipt_file_size, receipt_photo_data}
  * reorder:     {type:"reorder", order_no}
  * support_message: {type:"support_message", to:"support"|"admin",
  *                text, has_photo, photo_file_name, photo_file_size,
  *                photo_data (downscaled data URL or null)}
  * Discount codes are validated client-side for FORMAT only (and the demo
- * code GOD10 = 10% is applied locally for display). The SERVER (bot)
+ * code GOD10 = 10% is applied locally for display). A well-formed code
+ * that is not in the demo map is NEVER called invalid here — the server
+ * (bot) validates it at submit and applies it if it is real. The SERVER
  * recomputes the discount and the payable amount; never trust the
  * client-side numbers.
  * ========================================================================== */
@@ -100,6 +105,8 @@ function haptic(kind) {
     }
   } catch (e) { /* haptics are best-effort */ }
 }
+var SUBMIT_TIMEOUT_MS = 20000; /* اگر فراخوانی تابع در این زمان جواب
+  ندهد (شبکه‌ی گیرکرده)، زود fail می‌شود تا دکمه مرده به نظر نرسد. */
 function submitPayload(payload) {
   /* پی‌لود را از راه Edge Function به ربات می‌رساند؛ خروجی Promise
      با true یعنی سفارش/پیام در صندوق ربات ثبت شد (ربات چند ثانیه بعد
@@ -110,16 +117,24 @@ function submitPayload(payload) {
     console.log("[GodStar demo] submit payload:", JSON.stringify(payload));
     return Promise.resolve(true);
   }
+  var controller = (typeof AbortController !== "undefined") ? new AbortController() : null;
+  var timer = null;
+  if (controller) {
+    timer = setTimeout(function () { try { controller.abort(); } catch (e) {} }, SUBMIT_TIMEOUT_MS);
+  }
   return fetch(FUNCTION_URL, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ action: "submit", initData: tg ? tg.initData : "", payload: payload })
+    body: JSON.stringify({ action: "submit", initData: tg ? tg.initData : "", payload: payload }),
+    signal: controller ? controller.signal : undefined
   }).then(function (res) {
+    if (timer) clearTimeout(timer);
     if (!res.ok) throw new Error("http " + res.status);
     return res.json();
   }).then(function (data) {
     return !!(data && data.ok);
   }).catch(function (err) {
+    if (timer) clearTimeout(timer);
     console.log("[GodStar] submit via function failed, trying sendData fallback:", err);
     if (CAN_SEND && tg && typeof tg.sendData === "function") {
       try { tg.sendData(JSON.stringify(payload)); return true; } catch (e) { return false; }
@@ -687,17 +702,26 @@ function applyDiscountCode() {
   var raw = $("discount-code").value.trim().toUpperCase();
   /* client-side format check only: 3-12 Latin letters/digits */
   var okFormat = /^[A-Z0-9]{3,12}$/.test(raw);
-  $("discount-invalid").classList.add("hidden");
+  var note = $("discount-invalid");
+  note.classList.add("hidden");
   if (raw === "") { payState.discountCode = ""; payState.discount = 0; renderPayment(); return; }
   if (!okFormat) {
     payState.discountCode = raw; payState.discount = 0;
-    $("discount-invalid").classList.remove("hidden");
+    note.textContent = "این کد معتبر نیست.";
+    note.classList.remove("hidden");
     renderPayment(); return;
   }
   payState.discountCode = raw;
   var rate = DEMO_DISCOUNTS[raw];
   payState.discount = (rate && pendingOrder) ? pendingOrder.amount * rate : 0;
-  if (!rate) $("discount-invalid").classList.remove("hidden");
+  if (!rate) {
+    /* کدِ درست‌قالب ولی ناشناخته برای نمایش نیست: فقط GOD10 اینجا
+       شناخته می‌شود و بقیه‌ی کدها را ربات هنگام ثبت بررسی می‌کند و
+       اگر معتبر باشند همان‌جا اعمال می‌شوند — «نامعتبر» گفتن به
+       کد معتبر (مثل GOD5) دروغ است. */
+    note.textContent = "کد وارد شد؛ هنگام ثبت بررسی و اعمال می‌شود.";
+    note.classList.remove("hidden");
+  }
   renderPayment();
 }
 function openPayment(order) {
@@ -744,57 +768,66 @@ function bindPayment() {
     haptic("medium");
     var walletPay = $("pay-from-wallet").checked &&
       (!walletKnown || walletBalance >= payPayable()) && pendingOrder.amount > 0;
-    var payload = {
-      type: "order",
-      service: pendingOrder.service,
-      title: pendingOrder.title,
-      sub: pendingOrder.sub,
-      channel_id: pendingOrder.channel_id || null,
-      amount_usdt: pendingOrder.amount,
-      discount_code: payState.discountCode || null,
-      discount_usdt: payState.discount,
-      payable_usdt: payPayable(),
-      pay_from_wallet: walletPay,
-      receipt_kind: walletPay ? null : payState.receiptKind,
-      receipt_hash: (!walletPay && payState.receiptKind === "hash") ? $("pay-hash").value.trim() : null,
-      receipt_file_name: (!walletPay && payState.receiptKind === "photo" && payState.receiptFile.file)
-        ? payState.receiptFile.file.name : null,
-      receipt_file_size: (!walletPay && payState.receiptKind === "photo" && payState.receiptFile.file)
-        ? payState.receiptFile.file.size : null
-    };
-    if (pendingOrder.service === "ads") {
-      payload.views = pendingOrder.views;
-      payload.media = pendingOrder.media;
-      payload.ad_text = pendingOrder.ad_text;
-      payload.target_channels = pendingOrder.target_channels || null;
-      payload.media_file_name = pendingOrder.media_file_name;
-    } else if (pendingOrder.service === "members") {
-      payload.quantity = pendingOrder.quantity;
-    } else if (pendingOrder.service === "bot") {
-      payload.bot_type = pendingOrder.bot_type;
-      payload.plan_months = pendingOrder.plan_months;
-      payload.plan_price_usdt = pendingOrder.plan_price_usdt;
-      payload.notes = pendingOrder.notes || null;
-    }
-    var note = walletPay
-      ? "پرداخت از کیف پول انجام شد؛ نتیجه‌ی بررسی را با پیام بهت خبر می‌دهیم."
-      : (payState.receiptKind === "photo"
-        ? "عکس فیش را در گفتگو با ربات (@" + BOT_USERNAME + ") ارسال کن تا سفارشت تایید شود."
-        : "نتیجه‌ی بررسی پرداخت را با پیام بهت خبر می‌دهیم.");
+    /* عکس رسید (اگر انتخاب شده) اول کوچک می‌شود و با سفارش فرستاده
+       می‌شود تا ادمین همان لحظه آن را ببیند (مثل عکس پشتیبانی). */
+    var receiptFile = (!walletPay && payState.receiptKind === "photo")
+      ? payState.receiptFile.file : null;
     $("pay-submit").disabled = true;
-    submitPayload(payload).then(function (ok) {
-      if (!ok) { submitFailed("pay"); renderPayment(); return; }
-      /* سفارش همان لحظه در «سفارش‌های من» دیده شود؛ تا ۶۰ ثانیه هر
-         ۵ ثانیه چک می‌کنیم تا نسخه‌ی واقعی ربات جای آن بنشیند. */
-      addPendingOrder({
+    downscalePhoto(receiptFile).then(function (dataUrl) {
+      var payload = {
+        type: "order",
         service: pendingOrder.service,
         title: pendingOrder.title,
         sub: pendingOrder.sub,
-        amount: payPayable(),
-        meta: faTether(payPayable())
+        channel_id: pendingOrder.channel_id || null,
+        amount_usdt: pendingOrder.amount,
+        discount_code: payState.discountCode || null,
+        discount_usdt: payState.discount,
+        payable_usdt: payPayable(),
+        pay_from_wallet: walletPay,
+        receipt_kind: walletPay ? null : payState.receiptKind,
+        receipt_hash: (!walletPay && payState.receiptKind === "hash") ? $("pay-hash").value.trim() : null,
+        receipt_file_name: (!walletPay && payState.receiptKind === "photo" && payState.receiptFile.file)
+          ? payState.receiptFile.file.name : null,
+        receipt_file_size: (!walletPay && payState.receiptKind === "photo" && payState.receiptFile.file)
+          ? payState.receiptFile.file.size : null,
+        receipt_photo_data: dataUrl
+      };
+      if (pendingOrder.service === "ads") {
+        payload.views = pendingOrder.views;
+        payload.media = pendingOrder.media;
+        payload.ad_text = pendingOrder.ad_text;
+        payload.target_channels = pendingOrder.target_channels || null;
+        payload.media_file_name = pendingOrder.media_file_name;
+      } else if (pendingOrder.service === "members") {
+        payload.quantity = pendingOrder.quantity;
+      } else if (pendingOrder.service === "bot") {
+        payload.bot_type = pendingOrder.bot_type;
+        payload.plan_months = pendingOrder.plan_months;
+        payload.plan_price_usdt = pendingOrder.plan_price_usdt;
+        payload.notes = pendingOrder.notes || null;
+      }
+      var note = walletPay
+        ? "پرداخت از کیف پول انجام شد؛ نتیجه‌ی بررسی را با پیام بهت خبر می‌دهیم."
+        : (payState.receiptKind === "photo"
+          ? (dataUrl
+            ? "عکس فیش همراه سفارش فرستاده شد؛ نتیجه‌ی بررسی را با پیام بهت خبر می‌دهیم."
+            : "عکس فیش را در گفتگو با ربات (@" + BOT_USERNAME + ") ارسال کن تا سفارشت تایید شود.")
+          : "نتیجه‌ی بررسی پرداخت را با پیام بهت خبر می‌دهیم.");
+      submitPayload(payload).then(function (ok) {
+        if (!ok) { submitFailed("pay"); renderPayment(); return; }
+        /* سفارش همان لحظه در «سفارش‌های من» دیده شود؛ تا ۶۰ ثانیه هر
+           ۵ ثانیه چک می‌کنیم تا نسخه‌ی واقعی ربات جای آن بنشیند. */
+        addPendingOrder({
+          service: pendingOrder.service,
+          title: pendingOrder.title,
+          sub: pendingOrder.sub,
+          amount: payPayable(),
+          meta: faTether(payPayable())
+        });
+        startOrdersPolling(5000, 60000);
+        showSuccess("سفارش شما ثبت شد", null, note);
       });
-      startOrdersPolling(5000, 60000);
-      showSuccess("سفارش شما ثبت شد", null, note);
     });
   });
 }
@@ -838,31 +871,40 @@ function bindWallet() {
   $("wallet-hash").addEventListener("input", renderWallet);
   $("wallet-submit").addEventListener("click", function () {
     haptic("medium");
-    var payload = {
-      type: "wallet_charge",
-      amount_usdt: walletState.amount,
-      receipt_kind: walletState.receiptKind,
-      receipt_hash: walletState.receiptKind === "hash" ? $("wallet-hash").value.trim() : null,
-      receipt_file_name: (walletState.receiptKind === "photo" && walletState.receiptFile.file)
-        ? walletState.receiptFile.file.name : null,
-      receipt_file_size: (walletState.receiptKind === "photo" && walletState.receiptFile.file)
-        ? walletState.receiptFile.file.size : null
-    };
-    var note = walletState.receiptKind === "photo"
-      ? "عکس فیش را در گفتگو با ربات (@" + BOT_USERNAME + ") ارسال کن تا شارژ کیف پولت تایید شود."
-      : "نتیجه‌ی بررسی پرداخت را با پیام بهت خبر می‌دهیم.";
+    /* عکس رسید (اگر انتخاب شده) اول کوچک می‌شود و با شارژ فرستاده
+       می‌شود تا ادمین همان لحظه آن را ببیند (مثل عکس پشتیبانی). */
+    var receiptFile = (walletState.receiptKind === "photo")
+      ? walletState.receiptFile.file : null;
     $("wallet-submit").disabled = true;
-    submitPayload(payload).then(function (ok) {
-      if (!ok) { submitFailed("wallet"); renderWallet(); return; }
-      addPendingOrder({
-        service: "wallet_charge",
-        title: SERVICE_TITLES.wallet_charge,
-        sub: "",
-        amount: walletState.amount,
-        meta: faTether(walletState.amount)
+    downscalePhoto(receiptFile).then(function (dataUrl) {
+      var payload = {
+        type: "wallet_charge",
+        amount_usdt: walletState.amount,
+        receipt_kind: walletState.receiptKind,
+        receipt_hash: walletState.receiptKind === "hash" ? $("wallet-hash").value.trim() : null,
+        receipt_file_name: (walletState.receiptKind === "photo" && walletState.receiptFile.file)
+          ? walletState.receiptFile.file.name : null,
+        receipt_file_size: (walletState.receiptKind === "photo" && walletState.receiptFile.file)
+          ? walletState.receiptFile.file.size : null,
+        receipt_photo_data: dataUrl
+      };
+      var note = walletState.receiptKind === "photo"
+        ? (dataUrl
+          ? "عکس فیش همراه شارژ فرستاده شد؛ نتیجه‌ی بررسی را با پیام بهت خبر می‌دهیم."
+          : "عکس فیش را در گفتگو با ربات (@" + BOT_USERNAME + ") ارسال کن تا شارژ کیف پولت تایید شود.")
+        : "نتیجه‌ی بررسی پرداخت را با پیام بهت خبر می‌دهیم.";
+      submitPayload(payload).then(function (ok) {
+        if (!ok) { submitFailed("wallet"); renderWallet(); return; }
+        addPendingOrder({
+          service: "wallet_charge",
+          title: SERVICE_TITLES.wallet_charge,
+          sub: "",
+          amount: walletState.amount,
+          meta: faTether(walletState.amount)
+        });
+        startOrdersPolling(5000, 60000);
+        showSuccess("شارژ کیف پول ثبت شد", null, note);
       });
-      startOrdersPolling(5000, 60000);
-      showSuccess("شارژ کیف پول ثبت شد", null, note);
     });
   });
 }
