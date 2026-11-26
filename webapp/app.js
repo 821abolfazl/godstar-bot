@@ -654,6 +654,10 @@ function renderPayment() {
     : $("pay-hash").value.trim().length > 0;
   var walletOk = walletPay && pendingOrder.amount > 0 &&
     (!walletKnown || walletBalance >= payable); /* موجودی نامعلوم = ربات بررسی می‌کند */
+  /* پرداخت از کیف پول: روش‌های دستی (آدرس + رسید) پنهان می‌شوند —
+     فقط وقتی کیف پول واقعاً کافی است؛ اگر موجودی کم باشد روش دستی
+     می‌ماند تا کاربر بتواند با تتر پرداخت کند */
+  $("pay-manual-wrap").classList.toggle("hidden", walletPay && walletOk);
   $("pay-submit").disabled = !(receiptOk || walletOk);
   $("pay-note").classList.toggle("hidden", receiptOk || walletOk);
   if (walletOk) $("pay-note").textContent = "";
