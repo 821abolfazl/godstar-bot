@@ -21,22 +21,28 @@
  * --- Telegram API use ---
  * ready() + expand() on load. BackButton drives in-app back navigation
  * (shown on every screen except home). HapticFeedback on taps, guarded.
- * sendData ONLY works when the Mini App was launched from a Keyboard
- * button (the «🛍 باز کردن فروشگاه» button below the chat input). From
- * the menu button (blue) or an inline button, Telegram does not deliver
- * sendData to the bot at all — it fails silently. The app detects that
- * case (query_id present in initData) and tells the user to reopen the
- * shop from the keyboard button instead of showing a fake success.
- * (shown on every screen except home). HapticFeedback on taps, guarded.
+ * Submissions go through the Supabase Edge Function «godstar-api»
+ * (submitPayload): the app POSTs {action:"submit", initData, payload}
+ * and the function stores it in the webapp_inbox table; the bot polls
+ * that table (every 10s), validates initData with the bot token, and
+ * processes the payload exactly like a web_app_data message. That is
+ * why an order or a wallet charge registers no matter where the Mini
+ * App was launched from — blue menu button, keyboard button, or inline
+ * button. tg.sendData is only a fallback when the function call fails
+ * AND the launch is a keyboard launch (query_id absent in initData);
+ * from a menu launch sendData never reaches the bot, so it is not
+ * attempted there. «سفارش‌های من» and the wallet balance are fetched
+ * the same way ({action:"my-data"}) and show the user's REAL orders
+ * and balance inside the Mini App.
  * MainButton is deliberately NOT used: every screen already has its own
  * in-page submit button, and a second MainButton would risk double
  * submits. themeParams are deliberately ignored: v1 is the minimal LIGHT
  * theme by design, even inside Telegram.
  * When Telegram.WebApp is absent (plain browser) the app runs in demo
- * mode with demo data; sendData calls are logged to the console and the
+ * mode with demo data; submits are logged to the console and the
  * success screen is shown locally instead of closing the WebApp.
  *
- * --- sendData payloads (exact JSON keys) ---
+ * --- payloads sent to the bot (exact JSON keys) ---
  * order:        {type:"order", service:"ads"|"members"|"bot",
  *                title, sub, channel_id, amount_usdt, discount_code,
  *                discount_usdt, payable_usdt, pay_from_wallet,
@@ -50,6 +56,7 @@
  * wallet_charge: {type:"wallet_charge", amount_usdt,
  *                receipt_kind, receipt_hash, receipt_file_name,
  *                receipt_file_size}
+ * reorder:     {type:"reorder", order_no}
  * support_message: {type:"support_message", to:"support"|"admin",
  *                text, has_photo, photo_file_name, photo_file_size}
  * Discount codes are validated client-side for FORMAT only (and the demo
@@ -62,21 +69,15 @@
 var tg = (window.Telegram && window.Telegram.WebApp) ? window.Telegram.WebApp : null;
 var DEMO = !tg;
 
+/* آدرس Edge Function سوپابیس: مینی‌اپ سفارش/شارژ/پیام را اینجا POST
+   می‌کند و تابع آن را در جدول webapp_inbox می‌گذارد؛ ربات همان را
+   می‌خواند و پردازش می‌کند. به همین دلیل ثبت سفارش به دکمه‌ی بازشدن
+   مینی‌اپ وابسته نیست — از دکمه‌ی آبی منو هم ثبت می‌شود. */
+var FUNCTION_URL = "https://czxubuwpwtqzxvhniovu.supabase.co/functions/v1/godstar-api";
 /* sendData فقط وقتی کار می‌کند که مینی‌اپ از دکمه‌ی کیبورد باز شده
-   باشد (دکمه‌ی «🛍 باز کردن فروشگاه» در پایین گفتگو با ربات). از دکمه‌ی
-   منو (آبی) یا دکمه‌ی درون پیام، تلگرام داده را به ربات نمی‌رساند و
-   sendData بی‌صدا هیچ کاری نمی‌کند — برای همین سفارش ثبت می‌شد ولی به
-   ربات نمی‌رسید. query_id فقط در همان بازشدن‌های غیرکیبوردی هست، پس
-   نبودنش یعنی ارسال ممکن است. در حالت نمونه (مرورگر) ارسال نمایشی است. */
+   باشد (query_id در initData نباشد)؛ فقط به‌عنوان جایگزینِ اضطراری
+   وقتی فراخوانی Edge Function ناموفق باشد استفاده می‌شود. */
 var CAN_SEND = DEMO || !(tg && tg.initDataUnsafe && tg.initDataUnsafe.query_id);
-var SEND_BLOCKED_TEXT = "برای ثبت سفارش، فروشگاه را از دکمه‌ی «🛍 باز کردن فروشگاه» در پایین گفتگو با ربات باز کن — از دکمه‌ی آبی منو نمی‌شود سفارش ثبت کرد.";
-function ensureSendable() {
-  if (CAN_SEND) return true;
-  if (tg && tg.showAlert) { try { tg.showAlert(SEND_BLOCKED_TEXT); } catch (e) {} }
-  var banner = $("send-blocked-banner");
-  if (banner) banner.classList.remove("hidden");
-  return false;
-}
 
 /* ---------------- helpers ---------------- */
 function $(id) { return document.getElementById(id); }
@@ -96,13 +97,38 @@ function haptic(kind) {
     }
   } catch (e) { /* haptics are best-effort */ }
 }
-function sendData(payload) {
-  var json = JSON.stringify(payload);
-  if (tg && typeof tg.sendData === "function") {
-    tg.sendData(json);
-  } else {
-    console.log("[GodStar demo] sendData payload:", json);
+function submitPayload(payload) {
+  /* پی‌لود را از راه Edge Function به ربات می‌رساند؛ خروجی Promise
+     با true یعنی سفارش/پیام در صندوق ربات ثبت شد (ربات چند ثانیه بعد
+     آن را پردازش می‌کند و در گفتگو تایید می‌فرستد). در حالت نمونه
+     (مرورگر) فقط در کنسول نوشته می‌شود. اگر فراخوانی تابع ناموفق
+     باشد و بازشدن از کیبورد باشد، به‌عنوان جایگزین sendData زده می‌شود. */
+  if (DEMO) {
+    console.log("[GodStar demo] submit payload:", JSON.stringify(payload));
+    return Promise.resolve(true);
   }
+  return fetch(FUNCTION_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ action: "submit", initData: tg ? tg.initData : "", payload: payload })
+  }).then(function (res) {
+    if (!res.ok) throw new Error("http " + res.status);
+    return res.json();
+  }).then(function (data) {
+    return !!(data && data.ok);
+  }).catch(function (err) {
+    console.log("[GodStar] submit via function failed, trying sendData fallback:", err);
+    if (CAN_SEND && tg && typeof tg.sendData === "function") {
+      try { tg.sendData(JSON.stringify(payload)); return true; } catch (e) { return false; }
+    }
+    return false;
+  });
+}
+function submitFailed(kind) {
+  var msg = "ثبت نشد؛ لطفاً دوباره تلاش کن.";
+  if (tg && tg.showAlert) { try { tg.showAlert(msg); } catch (e) {} }
+  var note = kind === "pay" ? $("pay-note") : kind === "wallet" ? $("wallet-note") : null;
+  if (note) { note.textContent = msg; note.classList.remove("hidden"); }
 }
 function copyText(text, btn) {
   function done() {
@@ -173,30 +199,112 @@ var supportTarget = "support"; /* "support" | "admin" — set by «ارتباط 
 
 /* ---------------- navigation ---------------- */
 var navStack = ["home"];
+/* «سفارش‌ها» و «پشتیبانی» صفحه‌ی جدا نیستند؛ پنل‌های کشویی صفحه‌ی
+   اصلی‌اند (PANELS). فقط صفحه‌های فرعی (جزئیات سرویس، پرداخت، کیف
+   پول، موفقیت) اینجا صفحه‌اند. */
 var SCREEN_IDS = { home: "screen-home", ads: "screen-ads", member: "screen-member",
   bot: "screen-bot", payment: "screen-payment", wallet: "screen-wallet",
-  orders: "screen-orders", support: "screen-support", success: "screen-success" };
+  success: "screen-success" };
+
+/* پنل‌های اصلی: 0 خدمات، 1 سفارش‌های من، 2 پشتیبانی. در چیدمان راست‌به‌چپ
+   پنل بعدی سمت چپ است؛ پس برای دیدنش تراک باید به راست بلغزد
+   (translateX مثبت) — کشیدن انگشت به راست = پنل بعدی. */
+var PANELS = ["home", "orders", "support"];
+var currentPanel = 0;
+var homePanel = 0; /* پنلی که موقع باز کردن صفحه‌ی فرعی فعال بود، برای برگشت */
+
+function setPanel(i, animate) {
+  var next = Math.max(0, Math.min(PANELS.length - 1, i));
+  var changed = next !== currentPanel;
+  currentPanel = next;
+  var track = $("swipe-track");
+  if (track) {
+    track.classList.toggle("no-anim", animate === false);
+    track.style.transform = "translateX(" + (currentPanel * (100 / PANELS.length)) + "%)";
+  }
+  $all(".tab").forEach(function (t, j) {
+    t.classList.toggle("active", j === currentPanel);
+  });
+  if (changed) window.scrollTo(0, 0);
+  /* باز کردن پنل سفارش‌ها، داده‌ی واقعی را تازه می‌کند. */
+  if (PANELS[currentPanel] === "orders" && !DEMO) loadMyData();
+}
+
+function bindSwipe() {
+  var el = $("swipe-main");
+  var track = $("swipe-track");
+  if (!el || !track) return;
+  var startX = 0, startY = 0, dragging = false;
+  var basePct = 0;
+  el.addEventListener("touchstart", function (e) {
+    var t = e.touches[0];
+    startX = t.clientX; startY = t.clientY; dragging = false;
+    basePct = currentPanel * (100 / PANELS.length);
+    track.classList.add("no-anim");
+  }, { passive: true });
+  el.addEventListener("touchmove", function (e) {
+    var t = e.touches[0];
+    var dx = t.clientX - startX, dy = t.clientY - startY;
+    if (!dragging && Math.abs(dx) > 12 && Math.abs(dx) > Math.abs(dy)) dragging = true;
+    if (dragging) {
+      e.preventDefault();
+      var w = track.clientWidth;
+      var pct = basePct + (dx / w) * 100;
+      var max = (PANELS.length - 1) * (100 / PANELS.length);
+      pct = Math.max(-8, Math.min(max + 8, pct));
+      track.style.transform = "translateX(" + pct + "%)";
+    }
+  }, { passive: false });
+  function endSwipe(e) {
+    track.classList.remove("no-anim");
+    if (!dragging) { setPanel(currentPanel); return; }
+    var dx = e.changedTouches[0].clientX - startX;
+    var w = el.clientWidth;
+    var threshold = Math.max(60, w * 0.2);
+    if (dx > threshold) setPanel(currentPanel + 1);
+    else if (dx < -threshold) setPanel(currentPanel - 1);
+    else setPanel(currentPanel);
+  }
+  el.addEventListener("touchend", endSwipe);
+  el.addEventListener("touchcancel", function () {
+    track.classList.remove("no-anim");
+    setPanel(currentPanel);
+  });
+}
 
 function showScreen(name, push) {
+  var panelIdx = PANELS.indexOf(name);
+  if (panelIdx >= 0) {
+    /* بخش اصلی: صفحه‌ی جدا باز نمی‌شود؛ همان صفحه‌ی اصلی با پنل درست. */
+    $all(".screen").forEach(function (s) { s.classList.remove("active"); });
+    $("screen-home").classList.add("active");
+    window.scrollTo(0, 0);
+    navStack = ["home"];
+    setPanel(panelIdx);
+    updateBackButton();
+    return;
+  }
   var id = SCREEN_IDS[name];
   if (!id) return;
+  /* رفتن از صفحه‌ی اصلی به صفحه‌ی فرعی: پنل فعلی را نگه دار تا
+     دکمه‌ی برگشت به همان پنل برگردد. */
+  if (navStack[navStack.length - 1] === "home") homePanel = currentPanel;
   $all(".screen").forEach(function (s) { s.classList.remove("active"); });
   $(id).classList.add("active");
   window.scrollTo(0, 0);
   if (push !== false) {
     if (navStack[navStack.length - 1] !== name) navStack.push(name);
   }
-  /* top nav active state */
-  $all(".tab").forEach(function (t) {
-    t.classList.toggle("active", t.getAttribute("data-nav") === name ||
-      (name === "home" && t.getAttribute("data-nav") === "home"));
-  });
   updateBackButton();
+  /* باز کردن کیف پول، داده‌ی واقعی را تازه می‌کند. */
+  if (name === "wallet" && !DEMO) loadMyData();
 }
 function goBack() {
   if (navStack.length > 1) {
     navStack.pop();
-    showScreen(navStack[navStack.length - 1], false);
+    var prev = navStack[navStack.length - 1];
+    showScreen(prev, false);
+    if (prev === "home") setPanel(homePanel, false);
   }
 }
 function updateBackButton() {
@@ -609,7 +717,6 @@ function bindPayment() {
   $("btn-charge-pay").addEventListener("click", function () { haptic("light"); showScreen("wallet"); });
   $("pay-submit").addEventListener("click", function () {
     if (!pendingOrder) return;
-    if (!ensureSendable()) return;
     haptic("medium");
     var walletPay = $("pay-from-wallet").checked &&
       (!walletKnown || walletBalance >= payPayable()) && pendingOrder.amount > 0;
@@ -645,13 +752,16 @@ function bindPayment() {
       payload.plan_price_usdt = pendingOrder.plan_price_usdt;
       payload.notes = pendingOrder.notes || null;
     }
-    sendData(payload);
     var note = walletPay
       ? "پرداخت از کیف پول انجام شد؛ نتیجه‌ی بررسی را با پیام بهت خبر می‌دهیم."
       : (payState.receiptKind === "photo"
         ? "عکس فیش را در گفتگو با ربات (@" + BOT_USERNAME + ") ارسال کن تا سفارشت تایید شود."
         : "نتیجه‌ی بررسی پرداخت را با پیام بهت خبر می‌دهیم.");
-    showSuccess("سفارش شما ثبت شد", null, note);
+    $("pay-submit").disabled = true;
+    submitPayload(payload).then(function (ok) {
+      if (!ok) { submitFailed("pay"); renderPayment(); return; }
+      showSuccess("سفارش شما ثبت شد", null, note);
+    });
   });
 }
 
@@ -693,9 +803,8 @@ function bindWallet() {
   });
   $("wallet-hash").addEventListener("input", renderWallet);
   $("wallet-submit").addEventListener("click", function () {
-    if (!ensureSendable()) return;
     haptic("medium");
-    sendData({
+    var payload = {
       type: "wallet_charge",
       amount_usdt: walletState.amount,
       receipt_kind: walletState.receiptKind,
@@ -704,11 +813,15 @@ function bindWallet() {
         ? walletState.receiptFile.file.name : null,
       receipt_file_size: (walletState.receiptKind === "photo" && walletState.receiptFile.file)
         ? walletState.receiptFile.file.size : null
-    });
+    };
     var note = walletState.receiptKind === "photo"
       ? "عکس فیش را در گفتگو با ربات (@" + BOT_USERNAME + ") ارسال کن تا شارژ کیف پولت تایید شود."
       : "نتیجه‌ی بررسی پرداخت را با پیام بهت خبر می‌دهیم.";
-    showSuccess("شارژ کیف پول ثبت شد", null, note);
+    $("wallet-submit").disabled = true;
+    submitPayload(payload).then(function (ok) {
+      if (!ok) { submitFailed("wallet"); renderWallet(); return; }
+      showSuccess("شارژ کیف پول ثبت شد", null, note);
+    });
   });
 }
 
@@ -716,7 +829,8 @@ function bindWallet() {
 var SERVICE_ICONS = {
   ads: '<span class="svc-icon tint-pink" aria-hidden="true"><svg viewBox="0 0 24 24" width="22" height="22"><path fill="#EB5AA0" d="M12 2.5l2.6 6.2 6.7.5-5.1 4.4 1.6 6.5L12 16.6 6.2 20l1.6-6.5L2.7 9.2l6.7-.5z"/></svg></span>',
   member: '<span class="svc-icon tint-blue" aria-hidden="true"><svg viewBox="0 0 24 24" width="22" height="22"><path fill="#3C82C4" d="M12 12a4.5 4.5 0 1 0-4.5-4.5A4.5 4.5 0 0 0 12 12zm0 2c-3.6 0-7.5 1.8-7.5 4.2V20a1 1 0 0 0 1 1h13a1 1 0 0 0 1-1v-1.8C19.5 15.8 15.6 14 12 14z"/></svg></span>',
-  bot: '<span class="svc-icon tint-green" aria-hidden="true"><svg viewBox="0 0 24 24" width="22" height="22"><path fill="#46A064" d="M12 2a1 1 0 0 1 1 1v1.1a6 6 0 0 1 4.6 5.9v5.5a3 3 0 0 1-3 3h-.6v2.3a1 1 0 1 1-2 0v-2.3h-2v2.3a1 1 0 1 1-2 0v-2.3h-.6a3 3 0 0 1-3-3V10A6 6 0 0 1 9 4.1V3a1 1 0 0 1 1-1zm-3.5 8.5a1.5 1.5 0 1 0 1.5 1.5 1.5 1.5 0 0 0-1.5-1.5zm7 0a1.5 1.5 0 1 0 1.5 1.5 1.5 1.5 0 0 0-1.5-1.5zM8 15.5h8a.5.5 0 0 0 .5-.5v-1h-9v1a.5.5 0 0 0 .5.5z"/></svg></span>'
+  bot: '<span class="svc-icon tint-green" aria-hidden="true"><svg viewBox="0 0 24 24" width="22" height="22"><path fill="#46A064" d="M12 2a1 1 0 0 1 1 1v1.1a6 6 0 0 1 4.6 5.9v5.5a3 3 0 0 1-3 3h-.6v2.3a1 1 0 1 1-2 0v-2.3h-2v2.3a1 1 0 1 1-2 0v-2.3h-.6a3 3 0 0 1-3-3V10A6 6 0 0 1 9 4.1V3a1 1 0 0 1 1-1zm-3.5 8.5a1.5 1.5 0 1 0 1.5 1.5 1.5 1.5 0 0 0-1.5-1.5zm7 0a1.5 1.5 0 1 0 1.5 1.5 1.5 1.5 0 0 0-1.5-1.5zM8 15.5h8a.5.5 0 0 0 .5-.5v-1h-9v1a.5.5 0 0 0 .5.5z"/></svg></span>',
+  wallet_charge: '<span class="svc-icon tint-pink" aria-hidden="true"><svg viewBox="0 0 24 24" width="22" height="22"><path fill="#EB5AA0" d="M4 6a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v12a2 2 0 0 1-2-2V6H6v12h12v-2h2v2a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6zm12 4.5a1.5 1.5 0 1 0 0 3 1.5 1.5 0 0 0 0-3z"/></svg></span>'
 };
 function renderOrders(list) {
   var box = $("orders-list");
@@ -734,8 +848,10 @@ function renderOrders(list) {
       btn.textContent = "📦 مشاهده سفارش‌ها در ربات";
       btn.addEventListener("click", function () {
         haptic("light");
-        if (!ensureSendable()) return;
-        sendData({ type: "my_orders" });
+        submitPayload({ type: "my_orders" }).then(function (ok) {
+          if (!ok) { submitFailed(); return; }
+          if (tg && tg.showAlert) { try { tg.showAlert("سفارش‌هایت در گفتگو با ربات فرستاده می‌شوند."); } catch (e) {} }
+        });
       });
       box.appendChild(btn);
     }
@@ -762,6 +878,18 @@ function renderOrders(list) {
       r.addEventListener("click", function () { haptic("light"); showScreen("bot"); });
       main.appendChild(r);
     }
+    if (o.order_no && o.canReorder) {
+      var rb = document.createElement("button");
+      rb.type = "button"; rb.className = "renew-link"; rb.textContent = "🔁 دوباره";
+      rb.addEventListener("click", function () {
+        haptic("light");
+        submitPayload({ type: "reorder", order_no: o.order_no }).then(function (ok) {
+          if (!ok) { submitFailed(); return; }
+          showSuccess("سفارش دوباره ثبت شد", null, "شماره‌ی سفارش تازه در پیام ربات اعلام می‌شود؛ نتیجه‌ی بررسی را با پیام بهت خبر می‌دهیم.");
+        });
+      });
+      main.appendChild(rb);
+    }
     var side = document.createElement("div");
     side.className = "order-side";
     var chip = document.createElement("span");
@@ -773,6 +901,75 @@ function renderOrders(list) {
     row.appendChild(icon.firstChild || icon);
     row.appendChild(main); row.appendChild(side);
     box.appendChild(row);
+  });
+}
+
+/* ---------------- سفارش‌های واقعی (Edge Function) ---------------- */
+var SERVICE_TITLES = { ads: "تبلیغات Ads تلگرام", members: "خرید ممبر آپلودری",
+  bot: "ربات تلگرام", wallet_charge: "شارژ کیف پول" };
+var ORDER_STATUS_LABELS = { pending: "در انتظار تایید", confirmed: "تایید شد", rejected: "رد شد" };
+var ORDER_STATUS_CLASSES = { pending: "amber", confirmed: "green", rejected: "red" };
+
+function mapRealOrders(real) {
+  /* ردیف‌های my-data را به شکل نمایشی renderOrders تبدیل می‌کند. */
+  return real.map(function (o) {
+    var d = o.details || {};
+    var parts = [];
+    if (o.service === "ads" && d.views) parts.push(fa(d.views) + " بازدید");
+    if (o.service === "members" && d.count) parts.push(fa(d.count) + " ممبر");
+    if (o.service === "bot" && d.plan) parts.push("اشتراک " + d.plan);
+    if (d.channel_id) parts.push(d.channel_id);
+    var sub = parts.join(" — ");
+    if (o.status === "rejected" && d.reject_reason) {
+      sub += (sub ? " — " : "") + "دلیل رد: " + d.reject_reason;
+    }
+    var dateStr = "";
+    try { dateStr = new Date(o.created_at).toLocaleDateString("fa-IR"); } catch (e) {}
+    return {
+      service: o.service,
+      title: SERVICE_TITLES[o.service] || o.service,
+      sub: sub,
+      status: o.status,
+      statusLabel: ORDER_STATUS_LABELS[o.status] || o.status,
+      statusClass: ORDER_STATUS_CLASSES[o.status] || "amber",
+      meta: o.order_no + " — " + faTether(o.amount) + (dateStr ? " — " + dateStr : ""),
+      order_no: o.order_no,
+      canReorder: o.type === "order" &&
+        (o.service === "ads" || o.service === "members" || o.service === "bot")
+    };
+  });
+}
+function loadMyData() {
+  /* سفارش‌های واقعی و موجودی کیف پول را از Edge Function می‌گیرد و
+     صفحه‌ی «سفارش‌های من» و برچسب‌های کیف پول را تازه می‌کند. در حالت
+     نمونه، همان داده‌ی نمونه‌ی محلی نشان داده می‌شود. */
+  if (DEMO) { renderOrders(orders); refreshWalletLabels(); return; }
+  var box = $("orders-list");
+  if (box) {
+    box.innerHTML = "";
+    var loading = document.createElement("p");
+    loading.className = "friends-empty";
+    loading.textContent = "در حال بارگذاری…";
+    box.appendChild(loading);
+  }
+  fetch(FUNCTION_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ action: "my-data", initData: tg ? tg.initData : "" })
+  }).then(function (res) {
+    if (!res.ok) throw new Error("http " + res.status);
+    return res.json();
+  }).then(function (data) {
+    if (!data || !data.ok) throw new Error("bad response");
+    if (typeof data.wallet_balance === "number") {
+      walletBalance = data.wallet_balance;
+      walletKnown = true;
+      refreshWalletLabels();
+    }
+    renderOrders(mapRealOrders(data.orders || []));
+  }).catch(function (err) {
+    console.log("[GodStar] my-data failed:", err);
+    renderOrders([]); /* حالت خالی فعلی + دکمه‌ی «مشاهده سفارش‌ها در ربات» */
   });
 }
 
@@ -847,30 +1044,35 @@ function bindSupport() {
   function sendSupport() {
     var text = $("support-input").value.trim();
     if (!text && !supportPhoto) return;
-    if (!ensureSendable()) return;
     haptic("medium");
-    sendData({
+    var photo = supportPhoto;
+    var payload = {
       type: "support_message",
       to: supportTarget,
       text: text || null,
-      has_photo: !!supportPhoto,
-      photo_file_name: supportPhoto ? supportPhoto.name : null,
-      photo_file_size: supportPhoto ? supportPhoto.size : null
+      has_photo: !!photo,
+      photo_file_name: photo ? photo.name : null,
+      photo_file_size: photo ? photo.size : null
+    };
+    $("btn-send-support").disabled = true;
+    submitPayload(payload).then(function (ok) {
+      $("btn-send-support").disabled = false;
+      if (!ok) { submitFailed(); return; }
+      chatMessages.push({
+        mine: true,
+        photo: !!photo,
+        caption: photo ? (text || "عکس") : undefined,
+        text: photo ? undefined : text,
+        time: nowTimeFa()
+      });
+      $("support-input").value = "";
+      supportPhoto = null;
+      $("support-photo").value = "";
+      $("support-photo-note").textContent = "";
+      supportTarget = "support";
+      $("support-input").placeholder = "پیامت را بنویس...";
+      renderChat();
     });
-    chatMessages.push({
-      mine: true,
-      photo: !!supportPhoto,
-      caption: supportPhoto ? (text || "عکس") : undefined,
-      text: supportPhoto ? undefined : text,
-      time: nowTimeFa()
-    });
-    $("support-input").value = "";
-    supportPhoto = null;
-    $("support-photo").value = "";
-    $("support-photo-note").textContent = "";
-    supportTarget = "support";
-    $("support-input").placeholder = "پیامت را بنویس...";
-    renderChat();
   }
   $("btn-send-support").addEventListener("click", sendSupport);
   $("support-input").addEventListener("keydown", function (e) {
@@ -901,7 +1103,7 @@ function init() {
       console.log("[GodStar] user:", tg.initDataUnsafe.user.first_name);
     }
   }
-  bindNav(); bindHome(); bindChips(); bindCopyButtons();
+  bindNav(); bindSwipe(); bindHome(); bindChips(); bindCopyButtons();
   bindAds(); bindMember(); bindBot(); bindPayment(); bindWallet(); bindSupport(); bindSuccess();
   if (!DEMO) {
     /* داخل تلگرام داده‌ی نمونه نشان نمی‌دهیم؛ فقط حالت خالی واقعی. */
@@ -929,16 +1131,13 @@ function init() {
     $("btn-share-referral").textContent = "اشتراک‌گذاری";
     var loyaltyCard = document.querySelector(".loyalty-card");
     if (loyaltyCard) loyaltyCard.style.display = "none";
-    if (!CAN_SEND) {
-      var sendBanner = $("send-blocked-banner");
-      if (sendBanner) sendBanner.classList.remove("hidden");
-    }
   }
   renderFriends(friends);
   renderOrders(orders);
   renderChat();
   refreshWalletLabels();
   renderAds(); renderMember(); renderBot(); renderWallet();
+  if (!DEMO) loadMyData(); /* موجودی و سفارش‌های واقعی از همان استارت */
   showScreen("home", false);
   navStack = ["home"];
   updateBackButton();
