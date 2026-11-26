@@ -36,7 +36,7 @@ from pricing import (WALLET_ADDRESS, ads_price, member_price, bot_price,
                      compute_order_price, loyalty_eligible,
                      is_valid_channel_id, is_valid_referral_code)
 
-BOT_VERSION = "2026-11-26-1.0.5"   # فقط توی لاگ و برای ادمین در /start نوشته می‌شه
+BOT_VERSION = "2026-11-26-1.0.6"   # فقط توی لاگ و برای ادمین در /start نوشته می‌شه
 BOT_USERNAME = "GodStarShopBot"  # ربات اصلی؛ هرگز GodStarServiceBot (بازنشسته) نیست
 WEBAPP_URL = os.environ.get("WEBAPP_URL") or "https://821abolfazl.github.io/godstar-bot/"
 
@@ -108,6 +108,37 @@ def send_photo_bytes(chat_id, photo_bytes, caption=None, reply_markup=None):
         return None
     if not r.ok:
         print("telegram error:", "sendPhoto", r.status_code, r.text[:150])
+        _API_ERROR["last"] = {"status": r.status_code}
+        return None
+    return r.json().get("result")
+
+
+def send_video_bytes(chat_id, video_bytes, caption=None, reply_markup=None):
+    """فیلم را با بایت‌های واقعی (multipart) به تلگرام می‌فرستد؛ برای
+    فیلم تبلیغ که از مینی‌اپ می‌رسد. خروجی مثل send_photo_bytes:
+    نتیجه‌ی sendVideo یا None. محدودیت ۴۲۹ مثل api یک بار تلاش دوباره."""
+    url = f"https://api.telegram.org/bot{TOKEN}/sendVideo"
+    data = {"chat_id": chat_id}
+    if caption:
+        data["caption"] = caption
+    if reply_markup:
+        data["reply_markup"] = reply_markup
+    files = {"video": ("video.mp4", video_bytes, "video/mp4")}
+    try:
+        r = requests.post(url, data=data, files=files, timeout=120)
+        if r.status_code == 429:   # محدودیت سرعت تلگرام: صبر و یک بار تلاش دوباره
+            try:
+                wait = int(r.json().get("parameters", {}).get("retry_after", 5))
+            except Exception:
+                wait = 5
+            time.sleep(min(wait, 30))
+            r = requests.post(url, data=data, files=files, timeout=120)
+    except requests.RequestException as ex:   # قطعی/کندی شبکه نباید حلقه را خراب کند
+        print("telegram network error:", "sendVideo", type(ex).__name__)
+        _API_ERROR["last"] = {"status": "network"}
+        return None
+    if not r.ok:
+        print("telegram error:", "sendVideo", r.status_code, r.text[:150])
         _API_ERROR["last"] = {"status": r.status_code}
         return None
     return r.json().get("result")
@@ -287,7 +318,7 @@ def admin_keyboard():
         [{"text": "➕ ساخت کد تخفیف"}, {"text": "🗑 حذف کد تخفیف"}],
         [{"text": "📣 پیام همگانی"}, {"text": "📊 آمار"}],
         [{"text": "💬 پاسخ‌های خودکار"}, {"text": "➕ ساخت پاسخ خودکار"}],
-        [{"text": "🗑 حذف پاسخ خودکار"}],
+        [{"text": "🗑 حذف پاسخ خودکار"}, {"text": "👥 کاربران"}],
         [{"text": "🔙 بازگشت به منو"}],
     ], "resize_keyboard": True}
 
@@ -305,6 +336,7 @@ ADMIN_KEYBOARD_COMMANDS = {
     "💬 پاسخ‌های خودکار": "/autoreplies",
     "➕ ساخت پاسخ خودکار": "/addreply",
     "🗑 حذف پاسخ خودکار": "/delreply",
+    "👥 کاربران": "/users",
 }
 
 
@@ -341,7 +373,7 @@ def welcome_text(is_admin_user):
     if is_admin_user:
         text += (f"\n\n👑 شما ادمین هستید\n"
                  f"نسخه‌ی ربات: {BOT_VERSION}\n"
-                 "دستورهای ادمین: /orders ،/approve ،/reject ،/stats ،/broadcast")
+                 "دستورهای ادمین: /orders ،/approve ،/reject ،/stats ،/broadcast ،/users")
     return text
 
 
@@ -394,7 +426,13 @@ def order_summary_text(order, user=None):
         lines.append(f"پلن: {details['plan']}")
     if details.get("ad_text"):
         lines.append(f"متن تبلیغ: {details['ad_text'][:200]}")
-    if details.get("receipt_kind") == "photo":
+    if details.get("media") in ("photo", "video"):
+        media_label = "عکس" if details["media"] == "photo" else "ویدیو"
+        if details.get("ad_media_file_id"):
+            lines.append(f"رسانه‌ی تبلیغ: {media_label} ارسال شد 📎")
+        else:
+            lines.append(f"رسانه‌ی تبلیغ: {media_label} — مشتری در چت می‌فرستد 📷")
+    if details.get("receipt_kind") == "photo" and not order.get("receipt_file_id"):
         fname = details.get("receipt_file_name") or ""
         lines.append("رسید: عکس فیش — مشتری در چت می‌فرستد 📷"
                      + (f" ({fname})" if fname else ""))
@@ -824,12 +862,15 @@ def attach_receipt(store, chat_id, msg):
                  f"✅ رسید سفارش {order['order_no']} دریافت شد؛ "
                  "در انتظار تایید است. 🙏")
     if ADMIN_CHAT_ID:
+        # ادمین باید بداند رسید مال کیست: نام + آیدی فرستنده
+        user = store.get_user(chat_id) or {}
+        sender = user.get("first_name") or user.get("username") or str(chat_id)
         if photo_file_id:
             api("sendPhoto", chat_id=ADMIN_CHAT_ID, photo=photo_file_id,
-                caption=f"📷 رسید سفارش {order['order_no']} رسید.")
+                caption=f"📷 رسید سفارش {order['order_no']} رسید.\nاز: {sender} ({chat_id})")
         else:
             send_message(ADMIN_CHAT_ID,
-                         f"📎 هش تراکنش سفارش {order['order_no']} رسید:\n{text}")
+                         f"📎 هش تراکنش سفارش {order['order_no']} رسید:\n{text}\nاز: {sender} ({chat_id})")
     store.save_if_dirty()
     return True
 
@@ -911,12 +952,19 @@ def process_webapp_payload(store, chat_id, payload):
                 receipt_file_id=payload.get("receipt_file_id") or "",
                 receipt_kind=receipt_kind)
             receipt_sent = _attach_receipt_photo_from_webapp(store, order, payload)
+            media_sent = False
+            if service == "ads":
+                media_sent = _attach_ad_media_from_webapp(store, order, payload)
             confirm_text = ("سفارش شما ثبت شد ✅\n\n"
                             f"شماره سفارش: {order['order_no']}\n"
                             f"مبلغ: {order['amount']} USDT\n"
                             "در انتظار تایید\n\n" + ORDERS_NOTICE)
             if receipt_kind == "photo" and not order.get("paid_by_wallet") and not receipt_sent:
                 confirm_text += ("\n\n📷 لطفاً عکس فیش را همین‌جا در گفتگو "
+                                 "با ربات بفرست تا سفارشت تایید شود.")
+            if service == "ads" and (details.get("media") in ("photo", "video")) and not media_sent:
+                media_label = "عکس" if details.get("media") == "photo" else "فیلم"
+                confirm_text += (f"\n\n📷 لطفاً {media_label} تبلیغ را همین‌جا در گفتگو "
                                  "با ربات بفرست تا سفارشت تایید شود.")
             send_message(chat_id, confirm_text)
             notify_admin_new_order(store, order, receipt_sent=receipt_sent)
@@ -982,6 +1030,11 @@ def process_webapp_payload(store, chat_id, payload):
         elif ptype == "my_orders":
             send_my_orders(store, chat_id)
         elif ptype == "reorder":
+            # اول درخواست ثبت می‌شود تا اگر reorder_order خطا داد هم
+            # در لاگ بماند کدام سفارش، کی و با چه خطایی رد شد (تشخیص
+            # دکمه‌ی «دوباره» در ۱٫۰٫۵ بی‌اثر ماند چون هیچ ردی نداشت).
+            print(f"سفارش دوباره: درخواست {payload.get('order_no')} "
+                  f"از {chat_id}")
             new_order = reorder_order(store, chat_id, payload.get("order_no"))
             print(f"سفارش دوباره: {payload.get('order_no')} → "
                   f"{new_order['order_no']} ({new_order['amount']} USDT)")
@@ -993,7 +1046,9 @@ def process_webapp_payload(store, chat_id, payload):
         else:
             send_message(chat_id, "دستور دریافتی از فروشگاه شناخته نشد.")
     except ValueError as ex:
-        print("خطا در پی‌لود وب‌اپ:", repr(ex))
+        print("خطا در پی‌لود وب‌اپ:",
+              f"type={payload.get('type')} order_no={payload.get('order_no')}",
+              repr(ex))
         send_message(chat_id, f"⚠️ {ex}")
     store.save_if_dirty()
 
@@ -1097,20 +1152,60 @@ def _attach_receipt_photo_from_webapp(store, order, payload):
     return True
 
 
-def _decode_photo_data(photo_data):
-    """data URL عکس (data:image/jpeg;base64,...) را به بایت تبدیل
-    می‌کند؛ در هر خطایی None (رفتار قبلی: فقط نام عکس). سقف ۵ مگابایت."""
-    if not photo_data or not isinstance(photo_data, str):
+def _largest_video_file_id(res):
+    """file_id فیلمی که sendVideo برگردانده؛ اگر نبود ''."""
+    try:
+        return ((res or {}).get("video") or {}).get("file_id") or ""
+    except Exception:
+        return ""
+
+
+def _attach_ad_media_from_webapp(store, order, payload):
+    """عکس/فیلم تبلیغ سفارش Ads که از مینی‌اپ می‌رسد (ad_media_data)
+    را به ادمین می‌فرستد و file_id آن را در جزئیات سفارش می‌گذارد؛
+    خروجی True یعنی رسانه رسید و دیگر لازم نیست مشتری آن را در چت
+    بفرستد. عکس کوچک‌شده (JPEG) و فیلم تا ۵ مگابایت پذیرفته می‌شود."""
+    data = payload.get("ad_media_data")
+    kind = payload.get("ad_media_kind") or payload.get("media") or ""
+    if not data or kind not in ("photo", "video") or not ADMIN_CHAT_ID:
+        return False
+    media_bytes = _decode_data_url(data)
+    if not media_bytes:
+        return False
+    caption = f"🎬 رسانه‌ی تبلیغ سفارش {order['order_no']}"
+    if kind == "photo":
+        res = send_photo_bytes(ADMIN_CHAT_ID, media_bytes, caption=caption)
+        fid = _largest_photo_file_id(res)
+    else:
+        res = send_video_bytes(ADMIN_CHAT_ID, media_bytes, caption=caption)
+        fid = _largest_video_file_id(res)
+    if not fid:
+        return False
+    order.setdefault("details", {})["ad_media_file_id"] = fid
+    store.dirty = True
+    return True
+
+
+def _decode_data_url(data_url, max_bytes=5 * 1024 * 1024):
+    """data URL (data:...;base64,...) را به بایت تبدیل می‌کند؛ در هر
+    خطایی یا بزرگ‌تر از سقف، None (رفتار قبلی: فقط نام فایل)."""
+    if not data_url or not isinstance(data_url, str):
         return None
     try:
-        if "," in photo_data:
-            photo_data = photo_data.split(",", 1)[1]
-        raw = base64.b64decode(photo_data, validate=True)
-        if not raw or len(raw) > 5 * 1024 * 1024:
+        if "," in data_url:
+            data_url = data_url.split(",", 1)[1]
+        raw = base64.b64decode(data_url, validate=True)
+        if not raw or len(raw) > max_bytes:
             return None
         return raw
     except Exception:
         return None
+
+
+def _decode_photo_data(photo_data):
+    """data URL عکس (data:image/jpeg;base64,...) را به بایت تبدیل
+    می‌کند؛ در هر خطایی None (رفتار قبلی: فقط نام عکس). سقف ۵ مگابایت."""
+    return _decode_data_url(photo_data)
 
 
 def _forward_support_to_admin(store, chat_id, text="", photo_file_id="", photo_bytes=None, label="💬 پشتیبانی"):
@@ -1226,6 +1321,7 @@ ADMIN_COMMANDS_TEXT = (
     "🗑 حذف کد تخفیف — با کد\n"
     "📣 پیام همگانی — با متن پیام\n"
     "📊 آمار\n"
+    "👥 کاربران — لیست افرادی که از ربات استفاده می‌کنند، با آیدی\n"
     "💬 پاسخ‌های خودکار\n"
     "➕ ساخت پاسخ خودکار — با سؤال و جواب\n"
     "🗑 حذف پاسخ خودکار — با شماره")
@@ -1338,6 +1434,26 @@ def handle_admin_command(store, chat_id, text):
                      f"سفارش‌ها: {s['orders_total']} (در انتظار: {s['orders_pending']}، "
                      f"تاییدشده: {s['orders_confirmed']}، ردشده: {s['orders_rejected']})\n"
                      f"درآمد (تاییدشده، بدون شارژ کیف پول): {s['revenue_usdt']} USDT")
+    elif cmd == "/users":
+        users = store.list_users()
+        if not users:
+            send_message(chat_id, "هنوز کسی از ربات استفاده نکرده است.")
+            return
+        # پیام تلگرام سقف ۴۰۹۶ کاراکتر دارد؛ لیست را در چند پیام
+        # می‌فرستیم تا کاربر صدم هم جا شود.
+        chunks = [f"👥 کاربران «گاد استار» ({len(users)} نفر):"]
+        for u in users:
+            name = u.get("first_name") or u.get("username") or str(u.get("chat_id"))
+            uname = f" (@{u['username']})" if u.get("username") else ""
+            line = (f"👤 {name}{uname}\n   🆔 {u['chat_id']} — "
+                    f"✅ {u.get('completed_orders') or 0} سفارش — "
+                    f"👛 {u.get('wallet_balance') or 0} USDT")
+            if len(chunks[-1]) + 1 + len(line) > 3500:
+                chunks.append(line)
+            else:
+                chunks[-1] += "\n" + line
+        for chunk in chunks:
+            send_message(chat_id, chunk)
     elif cmd == "/autoreplies":
         rows = store.list_auto_replies()
         if not rows:
@@ -1370,7 +1486,7 @@ def handle_admin_command(store, chat_id, text):
 
 
 ADMIN_COMMANDS = {"/orders", "/approve", "/reject", "/codes", "/addcode",
-                  "/delcode", "/broadcast", "/stats", "/autoreplies",
+                  "/delcode", "/broadcast", "/stats", "/users", "/autoreplies",
                   "/addreply", "/delreply"}
 
 
