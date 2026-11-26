@@ -13,7 +13,8 @@
 //   my-data — سفارش‌های واقعی همان کاربر + موجودی کیف پولش؛
 //             {ok:true, wallet_balance, orders:[...]}
 // هر دو اکشن اول initData را دقیقاً مثل مستندات تلگرام اعتبارسنجی
-// می‌کنند (data_check_string + HMAC-SHA256 با SHA256 توکن) و auth_date
+// می‌کنند (data_check_string + HMAC-SHA256 با کلید مخفیِ HMAC-SHA256
+// توکن با کلید ثابت «WebAppData» — نه SHA256 ساده‌ی توکن) و auth_date
 // نباید بیش از ۲۴ ساعت قدیمی باشد؛ در غیر این صورت 401.
 //
 // متغیرهای محیطی (در داشبورد سوپابیس → Edge Functions → Secrets):
@@ -51,9 +52,19 @@ async function validateInitData(
   const dataCheckString = parts.join("\n");
   const authDate = Number(params.get("auth_date") || "0");
   if (!authDate || Date.now() / 1000 - authDate > 24 * 3600) return null;
-  // کلید مخفی = SHA256 توکن ربات؛ امضا = HMAC-SHA256 آن روی رشته‌ی بررسی
-  const secretKey = await crypto.subtle.digest(
-    "SHA-256",
+  // کلید مخفی = HMAC-SHA256 توکن با کلید ثابت «WebAppData» (مستندات
+  // تلگرام)؛ SHA256 ساده‌ی توکن غلط است و هیچ initData واقعی را قبول
+  // نمی‌کند. امضا = HMAC-SHA256 آن روی رشته‌ی بررسی
+  const webAppKey = await crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode("WebAppData"),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"],
+  );
+  const secretKey = await crypto.subtle.sign(
+    "HMAC",
+    webAppKey,
     new TextEncoder().encode(token),
   );
   const key = await crypto.subtle.importKey(
