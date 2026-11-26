@@ -130,11 +130,24 @@ class Store:
         url = f"{self.supabase_url.rstrip('/')}/rest/v1/{table}"
         if conflict:
             url += f"?on_conflict={conflict}"
+        # PostgREST در upsert دسته‌ای (PGRST102) می‌خواهد همه‌ی آبجکت‌ها
+        # دقیقاً کلیدهای یکسانی داشته باشند. ردیف خوانده‌شده از دیتابیس
+        # ستون‌های null (مثل confirmed_at سفارش) را دارد، ولی ردیف
+        # تازه‌ساخته آن کلید را ندارد — پس کلیدها را به اجتماع همه‌ی
+        # کلیدها یکسان می‌کنیم (کلیدِ نیست = null). بدون این، با آمدن
+        # دومین سفارش کل ذخیره‌ی جدول orders می‌افتاد (GS-1002 هرگز
+        # در دیتابیس نوشته نشد و «سفارش‌های من» آن را نشان نمی‌داد).
+        keys = []
+        for row in rows:
+            for k in row:
+                if k not in keys:
+                    keys.append(k)
+        normed = [{k: row.get(k) for k in keys} for row in rows]
         try:
             r = requests.post(url,
                               headers={**self._sb_headers(),
                                        "Prefer": "resolution=merge-duplicates"},
-                              json=rows, timeout=15)
+                              json=normed, timeout=15)
         except Exception as ex:
             raise RuntimeError(f"supabase unreachable (network?): {type(ex).__name__}") from ex
         if r.status_code in (401, 403):
