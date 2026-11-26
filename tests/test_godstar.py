@@ -1427,6 +1427,129 @@ class SwipeTabsTest(unittest.TestCase):
         self.assertIn('data-nav="support"', self.html)
 
 
+class SupportReplyTest(unittest.TestCase):
+    """دکمه‌ی «✏️ پاسخ» زیر پیام پشتیبانی در چت ادمین: با زدن آن ادمین
+    جوابش را تایپ می‌کند و به همان مشتری فرستاده می‌شود."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.store = Store(state_file=os.path.join(self.tmp.name, "state.json"))
+        self.store.load()
+        godstar.ensure_defaults(self.store)
+        self.sent = []
+        self.api_calls = []
+        self._orig_send = godstar.send_message
+        self._orig_api = godstar.api
+        self._orig_admin = godstar.ADMIN_CHAT_ID
+        self._orig_webapp = godstar.WEBAPP_URL
+        godstar.send_message = lambda chat_id, text, reply_markup=None: self.sent.append(
+            (chat_id, text, reply_markup)) or {"message_id": 1}
+        godstar.api = lambda method, **data: self.api_calls.append(
+            (method, data)) or {"message_id": 99}
+        godstar.ADMIN_CHAT_ID = "278899906"
+        godstar.WEBAPP_URL = "https://example.invalid/app"
+
+    def tearDown(self):
+        godstar.send_message = self._orig_send
+        godstar.api = self._orig_api
+        godstar.ADMIN_CHAT_ID = self._orig_admin
+        godstar.WEBAPP_URL = self._orig_webapp
+        self.tmp.cleanup()
+
+    def _admin_query(self, data):
+        return {"data": data, "id": "q1",
+                "message": {"chat": {"id": 278899906}}}
+
+    def test_forward_support_attaches_reply_button(self):
+        godstar._forward_support_to_admin(self.store, 111, text="سلام")
+        self.assertEqual(len(self.sent), 1)
+        chat_id, text, markup = self.sent[0]
+        self.assertEqual(chat_id, "278899906")
+        self.assertIn("سلام", text)
+        buttons = markup["inline_keyboard"][0]
+        self.assertEqual(buttons[0]["text"], "✏️ پاسخ")
+        self.assertEqual(buttons[0]["callback_data"], "support_reply:111")
+
+    def test_forward_support_photo_attaches_reply_button(self):
+        godstar._forward_support_to_admin(self.store, 111, text="فیش",
+                                          photo_file_id="FILE1")
+        photos = [d for m, d in self.api_calls if m == "sendPhoto"]
+        self.assertEqual(len(photos), 1)
+        import json as _json
+        buttons = _json.loads(photos[0]["reply_markup"])["inline_keyboard"][0]
+        self.assertEqual(buttons[0]["callback_data"], "support_reply:111")
+
+    def test_support_reply_button_prompts_admin(self):
+        godstar.handle_callback(self.store, self._admin_query("support_reply:111"))
+        prompt = self.store.state.get("pending_prompt", {}).get("278899906")
+        self.assertIsNotNone(prompt)
+        self.assertEqual(prompt["cmd"], "/support_reply 111")
+        self.assertTrue(any("جوابت به مشتری را تایپ کن" in t
+                            for _, t, _ in self.sent))
+
+    def test_support_reply_sends_to_customer(self):
+        godstar.handle_callback(self.store, self._admin_query("support_reply:111"))
+        msg = {"chat": {"id": 278899906}, "from": {"id": 278899906},
+               "text": "ممنون، بررسی می‌کنیم"}
+        godstar.handle_message(self.store, msg)
+        to_customer = [s for s in self.sent if s[0] == 111]
+        self.assertEqual(len(to_customer), 1)
+        self.assertEqual(to_customer[0][1], "ممنون، بررسی می‌کنیم")
+        # جواب با دکمه‌ی فروشگاه می‌رسد تا مشتری به مینی‌اپ برگردد
+        import json as _json
+        markup = to_customer[0][2]
+        self.assertIn("باز کردن فروشگاه", _json.dumps(markup, ensure_ascii=False))
+        self.assertTrue(any("✅ جواب به مشتری فرستاده شد" in t
+                            for c, t, _ in self.sent if c == 278899906))
+
+    def test_support_reply_cancel(self):
+        godstar.handle_callback(self.store, self._admin_query("support_reply:111"))
+        msg = {"chat": {"id": 278899906}, "from": {"id": 278899906},
+               "text": "لغو"}
+        godstar.handle_message(self.store, msg)
+        self.assertEqual([s for s in self.sent if s[0] == 111], [])
+        self.assertTrue(any("لغو شد" in t for _, t, _ in self.sent))
+
+    def test_support_reply_non_admin_rejected(self):
+        query = {"data": "support_reply:111", "id": "q1",
+                 "message": {"chat": {"id": 111}}}
+        godstar.handle_callback(self.store, query)
+        self.assertNotIn("278899906", self.store.state.get("pending_prompt", {}))
+        self.assertTrue(any("فقط ادمین" in (d.get("text") or "")
+                            for m, d in self.api_calls
+                            if m == "answerCallbackQuery"))
+
+
+class PayFromWalletTest(unittest.TestCase):
+    """پرداخت از کیف پول: با تیک خوردن، روش‌های دستی (آدرس + رسید)
+    پنهان می‌شوند و ثبت بدون رسید انجام می‌شود."""
+
+    def setUp(self):
+        self.root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        with open(os.path.join(self.root, "webapp", "index.html"),
+                  encoding="utf-8") as f:
+            self.html = f.read()
+        with open(os.path.join(self.root, "webapp", "app.js"),
+                  encoding="utf-8") as f:
+            self.js = f.read()
+
+    def test_manual_payment_wrapped_and_before_submit(self):
+        self.assertIn('id="pay-manual-wrap"', self.html)
+        segment = self.html[self.html.index('id="pay-manual-wrap"'):
+                            self.html.index('id="pay-submit"')]
+        for needle in ("آدرس کیف پول", "ارسال رسید", 'id="pay-receipt"',
+                       'id="pay-upload-wrap"', 'id="pay-hash-wrap"'):
+            self.assertIn(needle, segment)
+
+    def test_render_payment_hides_manual_only_when_wallet_covers(self):
+        self.assertIn(
+            '$("pay-manual-wrap").classList.toggle("hidden", walletPay && walletOk)',
+            self.js)
+
+    def test_wallet_pay_submits_without_receipt(self):
+        self.assertIn("receipt_kind: walletPay ? null", self.js)
+
+
 class GetUpdatesTest(unittest.TestCase):
     def setUp(self):
         self._orig_get = godstar.requests.get
