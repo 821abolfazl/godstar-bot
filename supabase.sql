@@ -77,8 +77,14 @@ create index if not exists referrals_referrer_idx on referrals (referrer_id);
 create table if not exists support_threads (
   admin_message_id bigint primary key,
   customer_chat_id bigint not null references users (chat_id),
+  orig_text text not null default '',
+  orig_photo_file_id text not null default '',
   created_at timestamptz not null default now()
 );
+alter table public.support_threads
+  add column if not exists orig_text text not null default '';
+alter table public.support_threads
+  add column if not exists orig_photo_file_id text not null default '';
 
 -- پاسخ‌های خودکار (مدیریت با ادمین)
 create table if not exists auto_replies (
