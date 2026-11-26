@@ -17,11 +17,14 @@
 # الگو از ربات دنبال‌کننده‌ی GodNews24 گرفته شده: فراخوانی خام Bot API
 # با requests، long-poll، مدیریت 429، و خطای شبکه که حلقه را نمی‌شکند.
 
+import hashlib
+import hmac
 import json
 import os
 import re
 import sys
 import time
+import urllib.parse
 from datetime import datetime, timezone
 
 import requests
@@ -32,7 +35,7 @@ from pricing import (WALLET_ADDRESS, ads_price, member_price, bot_price,
                      compute_order_price, loyalty_eligible,
                      is_valid_channel_id, is_valid_referral_code)
 
-BOT_VERSION = "2026-11-24-0.9"   # فقط توی لاگ و برای ادمین در /start نوشته می‌شه
+BOT_VERSION = "2026-11-24-1.0"   # فقط توی لاگ و برای ادمین در /start نوشته می‌شه
 BOT_USERNAME = "GodStarShopBot"  # ربات اصلی؛ هرگز GodStarServiceBot (بازنشسته) نیست
 WEBAPP_URL = os.environ.get("WEBAPP_URL") or "https://821abolfazl.github.io/godstar-bot/"
 
@@ -122,6 +125,45 @@ def answer_callback(callback_query_id, text=""):
 
 def is_admin(chat_id):
     return bool(ADMIN_CHAT_ID) and str(chat_id) == str(ADMIN_CHAT_ID)
+
+
+def validate_init_data(init_data, token, max_age_sec=86400, now=None):
+    """initData تلگرام را دقیقاً مثل مستندات تلگرام اعتبارسنجی می‌کند.
+
+    رشته‌ی بررسی از همه‌ی پارامترها به‌جز hash ساخته می‌شود (مرتب‌شده
+    بر اساس کلید، «key=value» با «\n»): کلید مخفی = SHA256 توکن ربات و
+    HMAC-SHA256 آن باید با hash برابر باشد؛ auth_date هم نباید بیش از
+    ۲۴ ساعت قدیمی باشد. خروجی: dict کاربر (user.id) یا None.
+    Edge Function همین الگوریتم را در TypeScript پیاده کرده است.
+    """
+    if not init_data or not token:
+        return None
+    try:
+        pairs = dict(urllib.parse.parse_qsl(init_data, keep_blank_values=True))
+    except Exception:
+        return None
+    received_hash = pairs.pop("hash", None)
+    if not received_hash:
+        return None
+    try:
+        auth_date = int(pairs.get("auth_date") or 0)
+    except (TypeError, ValueError):
+        return None
+    now = time.time() if now is None else now
+    if auth_date <= 0 or now - auth_date > max_age_sec:
+        return None
+    check_string = "\n".join(f"{k}={pairs[k]}" for k in sorted(pairs))
+    secret = hashlib.sha256(token.encode()).digest()
+    computed = hmac.new(secret, check_string.encode(), hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(computed, received_hash.lower()):
+        return None
+    try:
+        user = json.loads(pairs.get("user") or "{}")
+    except Exception:
+        return None
+    if not isinstance(user, dict) or not user.get("id"):
+        return None
+    return user
 
 
 # ---------- دکمه‌ی منوی پایین تلگرام (باز کردن مینی‌اپ) ----------
@@ -568,19 +610,56 @@ def confirm_order(store, order_no):
     return order
 
 
-def reject_order(store, order_no):
-    """رد سفارش توسط ادمین: وضعیت + پیام خودکار + برگشت پول کیف پول."""
+# دلایل آماده‌ی رد سفارش — ادمین یکی را انتخاب می‌کند یا دلیل خودش را می‌نویسد
+REJECT_REASONS = ["رسید معتبر نیست", "مبلغ با سفارش هم‌خوانی ندارد",
+                  "اطلاعات سفارش ناقص است", "سرویس در حال حاضر در دسترس نیست"]
+
+
+def reject_order(store, order_no, reason=None):
+    """رد سفارش توسط ادمین: وضعیت + دلیل رد + پیام خودکار + برگشت پول کیف پول.
+
+    دلیل (اگر داده شده باشد) در جزئیات سفارش ذخیره می‌شود تا هم در پیام
+    رد به مشتری برسد و هم در «سفارش‌های من» مینی‌اپ دیده شود.
+    """
     order = store.set_order_status(order_no, "rejected")
     user_id = order["user_id"]
+    if reason:
+        details = dict(order.get("details") or {})
+        details["reject_reason"] = reason
+        order["details"] = details
+        store.dirty = True
     if order.get("paid_by_wallet") and float(order.get("amount") or 0) > 0:
         store.credit_wallet(user_id, float(order["amount"]),
                             note=f"برگشت وجه سفارش ردشده {order_no}")
-    send_message(user_id,
-                 f"❌ متأسفانه سفارشت رد شد.\n\n"
-                 f"شماره سفارش: {order_no}\n"
-                 "اگر پول از کیف پولت کم شده بود، برگشت داده شد.\n"
-                 f"{SUPPORT_LINE}")
+    text = (f"❌ متأسفانه سفارشت رد شد.\n\n"
+            f"شماره سفارش: {order_no}\n")
+    if reason:
+        text += f"دلیل: {reason}\n"
+    text += ("اگر پول از کیف پولت کم شده بود، برگشت داده شد.\n"
+             f"{SUPPORT_LINE}")
+    send_message(user_id, text)
     return order
+
+
+def ask_reject_reason(store, chat_id, order_no):
+    """پیش از رد سفارش، دلیل را از ادمین می‌پرسد: ۴ دلیل آماده + تایپ
+    دلیل + لغو. رد واقعی فقط بعد از انتخاب/تایپ دلیل انجام می‌شود."""
+    order = store.get_order(order_no)
+    if order is None:
+        raise ValueError("سفارشی با این شماره پیدا نشد.")
+    if order.get("status") != "pending":
+        raise ValueError("این سفارش قبلاً بررسی شده است.")
+    store.state.setdefault("pending_reject", {})[str(chat_id)] = {
+        "order_no": order_no, "at": time.time()}
+    store.dirty = True
+    rows = [[{"text": reason,
+              "callback_data": f"reject_reason:{order_no}:{i}"}]
+            for i, reason in enumerate(REJECT_REASONS)]
+    rows.append([{"text": "✏️ تایپ دلیل",
+                  "callback_data": f"reject_reason_type:{order_no}"}])
+    rows.append([{"text": "لغو", "callback_data": f"reject_cancel:{order_no}"}])
+    send_message(chat_id, f"❌ رد سفارش {order_no}\n\nدلیل رد را انتخاب کن:",
+                 reply_markup={"inline_keyboard": rows})
 
 
 # ---------- سفارش دوباره + رسید + یادآوری‌ها (v0.4) ----------
@@ -767,19 +846,11 @@ def check_reminders(store):
         print("خطا در یادآوری‌ها:", repr(ex))
 
 
-# ---------- وب‌اپ (web_app_data) ----------
-def handle_web_app_data(store, msg):
-    """پیام web_app_data را اعتبارسنجی و پردازش می‌کند.
+# ---------- وب‌اپ (web_app_data + صندوق سوپابیس) ----------
+def process_webapp_payload(store, chat_id, payload):
+    """پی‌لود وب‌اپ را پردازش می‌کند؛ هم برای web_app_data تلگرام و هم
+    برای ردیف‌های صندوق وب‌اپ (Edge Function) یک مسیر است.
     قیمت هرگز از مشتری گرفته نمی‌شود؛ سرور دوباره حساب می‌کند."""
-    chat_id = msg["chat"]["id"]
-    user = store.ensure_user(chat_id, (msg.get("from") or {}).get("username"),
-                             (msg.get("from") or {}).get("first_name"))
-    store.get_or_create_referral_code(chat_id)
-    try:
-        payload = json.loads(msg["web_app_data"]["data"])
-    except Exception:
-        send_message(chat_id, "داده‌ی دریافتی از فروشگاه معتبر نیست؛ دوباره تلاش کن.")
-        return
     if not isinstance(payload, dict):
         send_message(chat_id, "داده‌ی دریافتی از فروشگاه معتبر نیست؛ دوباره تلاش کن.")
         return
@@ -842,9 +913,9 @@ def handle_web_app_data(store, msg):
                          f"https://t.me/{BOT_USERNAME}?start={code}\n\n"
                          + REFERRAL_LINE)
         elif ptype == "my_orders":
-            # سفارش‌های واقعی مشتری در چت فرستاده می‌شوند؛ وب‌اپ داده‌ی
-            # واقعی ندارد و عدد نمونه نشان نمی‌دهد.
             send_my_orders(store, chat_id)
+        elif ptype == "reorder":
+            reorder_order(store, chat_id, payload.get("order_no"))
         elif ptype == "my_wallet":
             balance = store.wallet_balance(chat_id)
             send_message(chat_id,
@@ -854,6 +925,76 @@ def handle_web_app_data(store, msg):
             send_message(chat_id, "دستور دریافتی از فروشگاه شناخته نشد.")
     except ValueError as ex:
         send_message(chat_id, f"⚠️ {ex}")
+    store.save_if_dirty()
+
+
+def handle_web_app_data(store, msg):
+    """پیام web_app_data را اعتبارسنجی و پردازش می‌کند (باز شدن از
+    دکمه‌ی کیبورد؛ باز شدن از دکمه‌ی منو از راه صندوق وب‌اپ می‌رسد)."""
+    chat_id = msg["chat"]["id"]
+    user = store.ensure_user(chat_id, (msg.get("from") or {}).get("username"),
+                             (msg.get("from") or {}).get("first_name"))
+    store.get_or_create_referral_code(chat_id)
+    try:
+        payload = json.loads(msg["web_app_data"]["data"])
+    except Exception:
+        send_message(chat_id, "داده‌ی دریافتی از فروشگاه معتبر نیست؛ دوباره تلاش کن.")
+        return
+    process_webapp_payload(store, chat_id, payload)
+
+
+INBOX_CHECK_EVERY_SEC = 10  # صندوق وب‌اپ حداکثر هر ۱۰ ثانیه چک می‌شود
+_LAST_INBOX_CHECK = 0
+
+
+def process_webapp_inbox(store):
+    """ردیف‌های صندوق وب‌اپ (webapp_inbox) را می‌خواند و پردازش می‌کند.
+
+    مینی‌اپ سفارش/شارژ/پیام را از راه Edge Function اینجا می‌گذارد تا از
+    هر جای باز شدن (دکمه‌ی آبی منو یا کیبورد) ثبت شود. هر ردیف: initData
+    با توکن ربات اعتبارسنجی می‌شود؛ اگر معتبر بود پی‌لودش مثل web_app_data
+    پردازش می‌شود؛ اگر نبود فقط لاگ می‌شود. ردیف در هر دو حالت حذف
+    می‌شود؛ اگر پردازش خطا بدهد، ردیف حذف می‌شود و به کاربر پیام خطا
+    می‌رسد. یک ردیف بد بقیه را متوقف نمی‌کند.
+    """
+    global _LAST_INBOX_CHECK
+    now = time.time()
+    if now - _LAST_INBOX_CHECK < INBOX_CHECK_EVERY_SEC:
+        return
+    _LAST_INBOX_CHECK = now
+    try:
+        rows = store.fetch_inbox_rows()
+    except Exception as ex:
+        print("خطا در خواندن صندوق وب‌اپ:", repr(ex))
+        return
+    for row in rows:
+        row_id = row.get("id")
+        user_id = row.get("user_id")
+        try:
+            user = validate_init_data(row.get("init_data") or "", TOKEN)
+            if user is None:
+                print("ردیف صندوق وب‌اپ initData معتبر ندارد؛ حذف می‌شود:", row_id)
+            else:
+                chat_id = int(user["id"])
+                store.ensure_user(chat_id)
+                store.get_or_create_referral_code(chat_id)
+                payload = row.get("payload")
+                if isinstance(payload, str):
+                    payload = json.loads(payload)
+                process_webapp_payload(store, chat_id, payload)
+        except Exception as ex:
+            print("خطا در پردازش ردیف صندوق وب‌اپ:", repr(ex))
+            if user_id:
+                try:
+                    send_message(int(user_id),
+                                 "مشکلی در ثبت سفارشت پیش آمد؛ لطفاً دوباره تلاش کن. 🙏")
+                except Exception:
+                    pass
+        finally:
+            try:
+                store.delete_inbox_row(row_id)
+            except Exception as ex:
+                print("خطا در حذف ردیف صندوق وب‌اپ:", repr(ex))
     store.save_if_dirty()
 
 
@@ -946,8 +1087,19 @@ def handle_admin_command(store, chat_id, text):
             send_message(chat_id, f"⚠️ {ex}")
     elif cmd == "/reject" and len(parts) >= 2:
         try:
-            order = reject_order(store, parts[1])
-            send_message(chat_id, f"❌ سفارش {order['order_no']} رد شد.")
+            ask_reject_reason(store, chat_id, parts[1])
+        except ValueError as ex:
+            send_message(chat_id, f"⚠️ {ex}")
+    elif cmd == "/reject_reason" and len(parts) >= 3:
+        # جواب تایپ‌شده‌ی ادمین به پرسش دلیل رد:
+        # "/reject_reason GS-1001 <دلیل>" — فقط از راه pending_prompt می‌رسد.
+        order_no = parts[1]
+        reason = text.split(None, 2)[2].strip()
+        try:
+            order = reject_order(store, order_no, reason)
+            store.state.get("pending_reject", {}).pop(str(chat_id), None)
+            store.dirty = True
+            send_message(chat_id, f"❌ سفارش {order['order_no']} رد شد.\nدلیل: {reason}")
         except ValueError as ex:
             send_message(chat_id, f"⚠️ {ex}")
     elif cmd == "/codes":
@@ -1262,11 +1414,47 @@ def handle_callback(store, query):
             answer_callback(query_id, f"سفارش {order_no} تایید شد ✅")
         except ValueError as ex:
             answer_callback(query_id, str(ex))
+    elif data.startswith("reject_reason_type:"):
+        order_no = data[len("reject_reason_type:"):]
+        order = store.get_order(order_no)
+        if order is None or order.get("status") != "pending":
+            answer_callback(query_id, "این سفارش در انتظار نیست.")
+        else:
+            store.state.setdefault("pending_prompt", {})[str(chat_id)] = {
+                "cmd": f"/reject_reason {order_no}", "at": time.time()}
+            store.state.get("pending_reject", {}).pop(str(chat_id), None)
+            store.dirty = True
+            send_message(chat_id,
+                         f"دلیل رد سفارش {order_no} را تایپ کن.\n"
+                         "برای لغو «لغو» را بفرست.")
+            answer_callback(query_id, "")
+    elif data.startswith("reject_reason:"):
+        rest = data[len("reject_reason:"):]
+        order_no, _, idx = rest.rpartition(":")
+        try:
+            reason = REJECT_REASONS[int(idx)]
+        except (ValueError, IndexError):
+            answer_callback(query_id, "دلیل نامعتبر است.")
+            return
+        try:
+            order = reject_order(store, order_no, reason)
+            store.state.get("pending_reject", {}).pop(str(chat_id), None)
+            store.dirty = True
+            answer_callback(query_id, f"سفارش {order_no} رد شد ❌")
+            send_message(chat_id, f"❌ سفارش {order['order_no']} رد شد.\nدلیل: {reason}")
+        except ValueError as ex:
+            answer_callback(query_id, str(ex))
+    elif data.startswith("reject_cancel:"):
+        order_no = data[len("reject_cancel:"):]
+        store.state.get("pending_reject", {}).pop(str(chat_id), None)
+        store.dirty = True
+        answer_callback(query_id, "لغو شد.")
+        send_message(chat_id, f"رد سفارش {order_no} لغو شد؛ سفارش در انتظار می‌ماند.")
     elif data.startswith("reject:"):
         order_no = data[len("reject:"):]
         try:
-            reject_order(store, order_no)
-            answer_callback(query_id, f"سفارش {order_no} رد شد ❌")
+            ask_reject_reason(store, chat_id, order_no)
+            answer_callback(query_id, "دلیل رد را انتخاب کن.")
         except ValueError as ex:
             answer_callback(query_id, str(ex))
     else:
@@ -1289,6 +1477,10 @@ def run_once(store):
         check_reminders(store)
     except Exception as ex:
         print("خطا در یادآوری‌ها:", repr(ex))
+    try:
+        process_webapp_inbox(store)
+    except Exception as ex:
+        print("خطا در صندوق وب‌اپ:", repr(ex))
     store.save_if_dirty()
 
 
