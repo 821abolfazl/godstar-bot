@@ -35,7 +35,7 @@ from pricing import (WALLET_ADDRESS, ads_price, member_price, bot_price,
                      compute_order_price, loyalty_eligible,
                      is_valid_channel_id, is_valid_referral_code)
 
-BOT_VERSION = "2026-11-26-1.0.2"   # فقط توی لاگ و برای ادمین در /start نوشته می‌شه
+BOT_VERSION = "2026-11-26-1.0.3"   # فقط توی لاگ و برای ادمین در /start نوشته می‌شه
 BOT_USERNAME = "GodStarShopBot"  # ربات اصلی؛ هرگز GodStarServiceBot (بازنشسته) نیست
 WEBAPP_URL = os.environ.get("WEBAPP_URL") or "https://821abolfazl.github.io/godstar-bot/"
 
@@ -914,7 +914,12 @@ def process_webapp_payload(store, chat_id, payload):
                 raise ValueError("برای ارسال پیام به پشتیبانی، متن یا عکس بفرست.")
             _forward_support_to_admin(store, chat_id, text=text, photo_file_id=photo,
                                       label="💬 پشتیبانی (از فروشگاه)")
-            send_message(chat_id, "پیامت به پشتیبانی رسید؛ به‌زودی جواب می‌دهیم. 🙏")
+            confirm = "پیامت به پشتیبانی رسید؛ به‌زودی جواب می‌دهیم. 🙏"
+            if payload.get("has_photo") and not photo:
+                # عکس در وب‌اپ فقط انتخاب شده؛ خودش را در چت می‌خواهد تا
+                # ادمین آن را ببیند — در تایید پیام هم گفته می‌شود.
+                confirm += "\n📷 عکست را همین‌جا در گفتگو با ربات بفرست تا به پشتیبانی برسد."
+            send_message(chat_id, confirm)
         elif ptype == "referral_share":
             code = store.get_or_create_referral_code(chat_id)
             send_message(chat_id,
