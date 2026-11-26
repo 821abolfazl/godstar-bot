@@ -309,6 +309,10 @@ textarea { resize: vertical; line-height: 1.8; }
 
 .discount-row { display: flex; align-items: center; gap: 10px; }
 .discount-row input { flex: 1; }
+.btn-discount { background: var(--pink); color: #fff; border: none; border-radius: 12px;
+  padding: 10px 18px; font-weight: 700; font-size: 15px; white-space: nowrap; }
+.btn-discount:disabled { opacity: 0.6; }
+.order-row { cursor: pointer; }
 .chip-applied { background: var(--green-tint); color: var(--green); font-size: 13px; font-weight: 700; border-radius: 999px; padding: 6px 14px; white-space: nowrap; }
 
 .wallet-card { display: flex; justify-content: space-between; align-items: center; margin-top: 20px; }
