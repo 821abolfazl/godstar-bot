@@ -6,17 +6,19 @@
  * --- PHOTO HANDLING (decision) ---
  * Telegram WebApp `sendData()` only carries a SMALL TEXT payload back to the
  * bot (and there is no file-upload channel inside a WebApp). A downscaled
- * data-URL preview is NOT sent either: it is unreliable (size limits, and
- * the bot cannot verify a payment from a tiny preview).
- * So for receipt photos, ad media and support photos the app sends ONLY
- * metadata in the sendData payload:
+ * data-URL preview is NOT sent for receipts: it is unreliable (size
+ * limits, and the bot cannot verify a payment from a tiny preview).
+ * So for receipt photos and ad media the app sends ONLY metadata:
  *   receipt_kind: "photo", receipt_file_name, receipt_file_size
- *   (and for ads: media_file_name; for support: has_photo, photo_file_name)
+ *   (and for ads: media_file_name)
  * The bot then asks the user IN THE BOT CHAT to send the photo as a normal
  * Telegram photo message, and matches it to the order/request by order
  * number (or by user id). The success screen tells the user exactly that.
+ * EXCEPTION — support photos (v1.0.4): the picked photo IS downscaled
+ * (max 1280px, JPEG) and sent with the message as `photo_data`, so the
+ * admin actually sees the photo; the bot forwards it with sendPhoto.
  * The file is still previewed locally (object URL) so the user sees what
- * they picked; nothing is uploaded anywhere from the WebApp.
+ * they picked.
  *
  * --- Telegram API use ---
  * ready() + expand() on load. BackButton drives in-app back navigation
@@ -58,7 +60,8 @@
  *                receipt_file_size}
  * reorder:     {type:"reorder", order_no}
  * support_message: {type:"support_message", to:"support"|"admin",
- *                text, has_photo, photo_file_name, photo_file_size}
+ *                text, has_photo, photo_file_name, photo_file_size,
+ *                photo_data (downscaled data URL or null)}
  * Discount codes are validated client-side for FORMAT only (and the demo
  * code GOD10 = 10% is applied locally for display). The SERVER (bot)
  * recomputes the discount and the payable amount; never trust the
@@ -662,14 +665,23 @@ function renderPayment() {
     : $("pay-hash").value.trim().length > 0;
   var walletOk = walletPay && pendingOrder.amount > 0 &&
     (!walletKnown || walletBalance >= payable); /* موجودی نامعلوم = ربات بررسی می‌کند */
-  /* پرداخت از کیف پول: روش‌های دستی (آدرس + رسید) پنهان می‌شوند —
-     فقط وقتی کیف پول واقعاً کافی است؛ اگر موجودی کم باشد روش دستی
-     می‌ماند تا کاربر بتواند با تتر پرداخت کند */
-  $("pay-manual-wrap").classList.toggle("hidden", walletPay && walletOk);
+  /* پرداخت از کیف پول: زدن تیک، روش‌های دستی (آدرس + رسید) را پنهان
+     می‌کند — حتی اگر موجودی کم باشد؛ در آن صورت هشدار کمبود موجودی
+     نشان داده می‌شود و ثبت نهایی تا شارژ کیف پول یا برداشتن تیک،
+     غیرفعال می‌ماند. */
+  $("pay-manual-wrap").classList.toggle("hidden", walletPay);
   $("pay-submit").disabled = !(receiptOk || walletOk);
-  $("pay-note").classList.toggle("hidden", receiptOk || walletOk);
-  if (walletOk) $("pay-note").textContent = "";
-  else $("pay-note").textContent = "برای ثبت نهایی، رسید یا کد هش را ارسال کن";
+  if (walletPay && !walletOk) {
+    $("pay-note").classList.remove("hidden");
+    $("pay-note").textContent = "موجودی کیف پولت (" + fa(walletBalance) + " تتر) برای این سفارش (" +
+      faTether(payable) + ") کافی نیست — اول کیف پول را شارژ کن یا تیک پرداخت با کیف پول را بردار.";
+  } else if (receiptOk || walletOk) {
+    $("pay-note").classList.add("hidden");
+    $("pay-note").textContent = "";
+  } else {
+    $("pay-note").classList.remove("hidden");
+    $("pay-note").textContent = "برای ثبت نهایی، رسید یا کد هش را ارسال کن";
+  }
 }
 function applyDiscountCode() {
   var raw = $("discount-code").value.trim().toUpperCase();
@@ -1136,6 +1148,41 @@ function nowTimeFa() {
   var d = new Date();
   return d.getHours().toString().padStart(2, "0") + ":" + d.getMinutes().toString().padStart(2, "0");
 }
+function downscalePhoto(file) {
+  /* عکس را به حداکثر ۱۲۸۰ پیکسل (JPEG با کیفیت ۰٫۸) کوچک می‌کند و
+     به‌صورت data URL برمی‌گرداند تا همراه پیام پشتیبانی، خود عکس به
+     ادمین برسد. در هر خطایی null برمی‌گردد و فقط نام عکس فرستاده
+     می‌شود (رفتار قبلی). */
+  return new Promise(function (resolve) {
+    try {
+      if (!file || !file.type || file.type.indexOf("image/") !== 0) { resolve(null); return; }
+      if (typeof FileReader === "undefined") { resolve(null); return; }
+      var reader = new FileReader();
+      reader.onerror = function () { resolve(null); };
+      reader.onload = function () {
+        try {
+          var img = new Image();
+          img.onerror = function () { resolve(null); };
+          img.onload = function () {
+            try {
+              var maxSide = 1280;
+              var scale = Math.min(1, maxSide / Math.max(img.width, img.height));
+              var canvas = document.createElement("canvas");
+              canvas.width = Math.max(1, Math.round(img.width * scale));
+              canvas.height = Math.max(1, Math.round(img.height * scale));
+              var g = canvas.getContext("2d");
+              if (!g) { resolve(null); return; }
+              g.drawImage(img, 0, 0, canvas.width, canvas.height);
+              resolve(canvas.toDataURL("image/jpeg", 0.8));
+            } catch (e) { resolve(null); }
+          };
+          img.src = reader.result;
+        } catch (e) { resolve(null); }
+      };
+      reader.readAsDataURL(file);
+    } catch (e) { resolve(null); }
+  });
+}
 function bindSupport() {
   $all(".faq-item").forEach(function (item) {
     item.querySelector(".faq-q").addEventListener("click", function () {
@@ -1187,38 +1234,43 @@ function bindSupport() {
     if (!text && !supportPhoto) return;
     haptic("medium");
     var photo = supportPhoto;
-    var payload = {
-      type: "support_message",
-      to: supportTarget,
-      text: text || null,
-      has_photo: !!photo,
-      photo_file_name: photo ? photo.name : null,
-      photo_file_size: photo ? photo.size : null
-    };
     var sentPhotoUrl = photo ? supportPhotoUrl : null;
     $("btn-send-support").disabled = true;
-    submitPayload(payload).then(function (ok) {
-      $("btn-send-support").disabled = false;
-      if (!ok) { submitFailed(); return; }
-      chatMessages.push({
-        mine: true,
-        photo: !!photo,
-        photoUrl: sentPhotoUrl,
-        caption: photo ? (text || "عکس") : undefined,
-        text: photo ? undefined : text,
-        time: nowTimeFa()
+    /* عکس را کوچک می‌کنیم تا خود عکس هم همراه پیام به پشتیبانی برسد
+       (نه فقط نامش)؛ اگر کوچک‌سازی نشد، فقط نام عکس فرستاده می‌شود. */
+    downscalePhoto(photo).then(function (dataUrl) {
+      var payload = {
+        type: "support_message",
+        to: supportTarget,
+        text: text || null,
+        has_photo: !!photo,
+        photo_file_name: photo ? photo.name : null,
+        photo_file_size: photo ? photo.size : null,
+        photo_data: dataUrl
+      };
+      submitPayload(payload).then(function (ok) {
+        $("btn-send-support").disabled = false;
+        if (!ok) { submitFailed(); return; }
+        chatMessages.push({
+          mine: true,
+          photo: !!photo,
+          photoUrl: sentPhotoUrl,
+          caption: photo ? (text || "عکس") : undefined,
+          text: photo ? undefined : text,
+          time: nowTimeFa()
+        });
+        $("support-input").value = "";
+        supportPhoto = null;
+        /* آدرس عکس فرستاده‌شده در پیام چت می‌ماند (باطل نمی‌شود) تا عکس
+           در همان گفتگو دیده شود؛ انتخاب تازه، آدرس قبلی را باطل نمی‌کند. */
+        supportPhotoUrl = null;
+        $("support-photo").value = "";
+        $("support-photo-pick").classList.add("hidden");
+        $("support-photo-note").textContent = "";
+        supportTarget = "support";
+        $("support-input").placeholder = "پیامت را بنویس...";
+        renderChat();
       });
-      $("support-input").value = "";
-      supportPhoto = null;
-      /* آدرس عکس فرستاده‌شده در پیام چت می‌ماند (باطل نمی‌شود) تا عکس
-         در همان گفتگو دیده شود؛ انتخاب تازه، آدرس قبلی را باطل نمی‌کند. */
-      supportPhotoUrl = null;
-      $("support-photo").value = "";
-      $("support-photo-pick").classList.add("hidden");
-      $("support-photo-note").textContent = "";
-      supportTarget = "support";
-      $("support-input").placeholder = "پیامت را بنویس...";
-      renderChat();
     });
   }
   $("btn-send-support").addEventListener("click", sendSupport);
