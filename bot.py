@@ -17,6 +17,7 @@
 # الگو از ربات دنبال‌کننده‌ی GodNews24 گرفته شده: فراخوانی خام Bot API
 # با requests، long-poll، مدیریت 429، و خطای شبکه که حلقه را نمی‌شکند.
 
+import base64
 import hashlib
 import hmac
 import json
@@ -35,7 +36,7 @@ from pricing import (WALLET_ADDRESS, ads_price, member_price, bot_price,
                      compute_order_price, loyalty_eligible,
                      is_valid_channel_id, is_valid_referral_code)
 
-BOT_VERSION = "2026-11-26-1.0.3"   # فقط توی لاگ و برای ادمین در /start نوشته می‌شه
+BOT_VERSION = "2026-11-26-1.0.4"   # فقط توی لاگ و برای ادمین در /start نوشته می‌شه
 BOT_USERNAME = "GodStarShopBot"  # ربات اصلی؛ هرگز GodStarServiceBot (بازنشسته) نیست
 WEBAPP_URL = os.environ.get("WEBAPP_URL") or "https://821abolfazl.github.io/godstar-bot/"
 
@@ -76,6 +77,37 @@ def api(method, **data):
         return None
     if not r.ok:
         print("telegram error:", method, r.status_code, r.text[:150])
+        _API_ERROR["last"] = {"status": r.status_code}
+        return None
+    return r.json().get("result")
+
+
+def send_photo_bytes(chat_id, photo_bytes, caption=None, reply_markup=None):
+    """عکس را با بایت‌های واقعی (multipart) به تلگرام می‌فرستد؛ برای
+    عکس پشتیبانی که از مینی‌اپ کوچک‌شده می‌رسد. خروجی مثل api است:
+    نتیجه‌ی sendPhoto یا None. محدودیت ۴۲۹ مثل api یک بار تلاش دوباره."""
+    url = f"https://api.telegram.org/bot{TOKEN}/sendPhoto"
+    data = {"chat_id": chat_id}
+    if caption:
+        data["caption"] = caption
+    if reply_markup:
+        data["reply_markup"] = reply_markup
+    files = {"photo": ("photo.jpg", photo_bytes, "image/jpeg")}
+    try:
+        r = requests.post(url, data=data, files=files, timeout=60)
+        if r.status_code == 429:   # محدودیت سرعت تلگرام: صبر و یک بار تلاش دوباره
+            try:
+                wait = int(r.json().get("parameters", {}).get("retry_after", 5))
+            except Exception:
+                wait = 5
+            time.sleep(min(wait, 30))
+            r = requests.post(url, data=data, files=files, timeout=60)
+    except requests.RequestException as ex:   # قطعی/کندی شبکه نباید حلقه را خراب کند
+        print("telegram network error:", "sendPhoto", type(ex).__name__)
+        _API_ERROR["last"] = {"status": "network"}
+        return None
+    if not r.ok:
+        print("telegram error:", "sendPhoto", r.status_code, r.text[:150])
         _API_ERROR["last"] = {"status": r.status_code}
         return None
     return r.json().get("result")
@@ -907,15 +939,17 @@ def process_webapp_payload(store, chat_id, payload):
         elif ptype == "support_message":
             text = (payload.get("text") or "").strip()
             photo = payload.get("photo_file_id") or ""
-            if payload.get("has_photo") and not photo:
+            photo_bytes = _decode_photo_data(payload.get("photo_data"))
+            if payload.get("has_photo") and not photo and not photo_bytes:
                 # عکس در وب‌اپ فقط انتخاب شده؛ خود عکس بعداً در چت می‌رسد
                 text = (text + "\n(📷 عکس هم دارد — مشتری در چت می‌فرستد.)").strip()
-            if not text and not photo:
+            if not text and not photo and not photo_bytes:
                 raise ValueError("برای ارسال پیام به پشتیبانی، متن یا عکس بفرست.")
             _forward_support_to_admin(store, chat_id, text=text, photo_file_id=photo,
+                                      photo_bytes=photo_bytes,
                                       label="💬 پشتیبانی (از فروشگاه)")
             confirm = "پیامت به پشتیبانی رسید؛ به‌زودی جواب می‌دهیم. 🙏"
-            if payload.get("has_photo") and not photo:
+            if payload.get("has_photo") and not photo and not photo_bytes:
                 # عکس در وب‌اپ فقط انتخاب شده؛ خودش را در چت می‌خواهد تا
                 # ادمین آن را ببیند — در تایید پیام هم گفته می‌شود.
                 confirm += "\n📷 عکست را همین‌جا در گفتگو با ربات بفرست تا به پشتیبانی برسد."
@@ -1012,7 +1046,23 @@ def process_webapp_inbox(store):
     store.save_if_dirty()
 
 
-def _forward_support_to_admin(store, chat_id, text="", photo_file_id="", label="💬 پشتیبانی"):
+def _decode_photo_data(photo_data):
+    """data URL عکس (data:image/jpeg;base64,...) را به بایت تبدیل
+    می‌کند؛ در هر خطایی None (رفتار قبلی: فقط نام عکس). سقف ۵ مگابایت."""
+    if not photo_data or not isinstance(photo_data, str):
+        return None
+    try:
+        if "," in photo_data:
+            photo_data = photo_data.split(",", 1)[1]
+        raw = base64.b64decode(photo_data, validate=True)
+        if not raw or len(raw) > 5 * 1024 * 1024:
+            return None
+        return raw
+    except Exception:
+        return None
+
+
+def _forward_support_to_admin(store, chat_id, text="", photo_file_id="", photo_bytes=None, label="💬 پشتیبانی"):
     """پیام پشتیبانی مشتری را به ادمین می‌رساند و آیدی پیام را
     برای برگرداندن جواب ادمین ذخیره می‌کند."""
     if not ADMIN_CHAT_ID:
@@ -1022,7 +1072,11 @@ def _forward_support_to_admin(store, chat_id, text="", photo_file_id="", label="
     name = user.get("first_name") or user.get("username") or str(chat_id)
     caption = f"{label}\nاز: {name} ({chat_id})"
     kb = support_reply_keyboard(chat_id)
-    if photo_file_id:
+    if photo_bytes:
+        res = send_photo_bytes(ADMIN_CHAT_ID, photo_bytes,
+                               caption=caption + (f"\n{text}" if text else ""),
+                               reply_markup=json.dumps(kb, ensure_ascii=False))
+    elif photo_file_id:
         res = api("sendPhoto", chat_id=ADMIN_CHAT_ID, photo=photo_file_id,
                   caption=caption + (f"\n{text}" if text else ""),
                   reply_markup=json.dumps(kb, ensure_ascii=False))
