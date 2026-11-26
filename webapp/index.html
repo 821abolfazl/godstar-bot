@@ -2,7 +2,7 @@
 <html lang="fa" dir="rtl">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <title>گاد استار — خدمات تلگرام</title>
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
 <link rel="stylesheet" href="style.css">
@@ -420,6 +420,7 @@
     <label class="field-label" for="discount-code">کد تخفیف</label>
     <div class="discount-row">
       <input type="text" id="discount-code" placeholder="کد تخفیف را وارد کن" dir="ltr" class="ltr-input">
+      <button class="btn-discount" id="discount-apply" type="button">ثبت</button>
       <span class="chip-applied hidden" id="discount-applied">اعمال شد</span>
     </div>
     <p class="field-note hidden" id="discount-invalid">این کد معتبر نیست.</p>
@@ -526,6 +527,14 @@
 
   <!-- ======================= ORDERS ======================= -->
   <!-- ======================= SUCCESS ======================= -->
+  <section class="screen" id="screen-order-detail">
+    <header class="subhead">
+      <button class="back-btn" data-back type="button" aria-label="بازگشت">›</button>
+      <div><h2>جزئیات سفارش</h2><p>مشخصات کامل سفارش</p></div>
+    </header>
+    <div id="order-detail-body"></div>
+  </section>
+
   <section class="screen" id="screen-success">
     <div class="success-wrap">
       <span class="success-check" aria-hidden="true">✓</span>
