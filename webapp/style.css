@@ -50,6 +50,16 @@ input::placeholder, textarea::placeholder { color: #A6A9BB; }
 .screen { display: none; }
 .screen.active { display: block; }
 
+/* ---------- main shell: sticky header + swipe panels ---------- */
+/* بالای صفحه (لوگو، کیف پول و تب‌ها) همیشه می‌ماند؛ سه بخش اصلی
+   (خدمات / سفارش‌های من / پشتیبانی) پنل‌های کشویی همان صفحه‌اند،
+   نه صفحه‌ی جدا — با کشیدن انگشت به راست و چپ جابه‌جا می‌شوند. */
+.main-head { position: sticky; top: 0; z-index: 20; background: var(--bg); }
+.swipe { overflow: hidden; touch-action: pan-y; }
+.swipe-track { display: flex; width: 300%; transition: transform .28s ease; will-change: transform; }
+.swipe-track.no-anim { transition: none; }
+.swipe-panel { flex: 0 0 33.3333%; min-width: 0; padding-bottom: 8px; }
+
 /* ---------- header / nav ---------- */
 .topbar {
   display: flex; align-items: center; justify-content: space-between;
