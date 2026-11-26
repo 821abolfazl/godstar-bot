@@ -126,3 +126,20 @@ grant select, insert, update, delete on public.support_threads to service_role;
 grant select, insert, update, delete on public.auto_replies to service_role;
 grant select, insert, update, delete on public.order_reminders to service_role;
 grant usage, select on all sequences in schema public to service_role;
+
+-- صندوق ورودی مینی‌اپ (نسخه‌ی ۱٫۰): مینی‌اپ سفارش/شارژ/پیام را از راه
+-- Edge Function «godstar-api» اینجا می‌گذارد تا از هر جای باز شدن
+-- (دکمه‌ی آبی منو یا کیبورد) ثبت شود؛ ربات هر ۱۰ ثانیه می‌خواند،
+-- initData را با توکن ربات اعتبارسنجی می‌کند، پی‌لود را پردازش
+-- می‌کند و ردیف را حذف می‌کند. جدول گذراست و در حافظه‌ی ربات
+-- (load/save) نمی‌آید.
+create table if not exists webapp_inbox (
+  id uuid primary key,
+  user_id bigint not null,
+  init_data text not null,
+  payload jsonb not null,
+  created_at timestamptz not null default now()
+);
+create index if not exists webapp_inbox_created_idx on webapp_inbox (created_at);
+
+grant select, insert, update, delete on public.webapp_inbox to service_role;
