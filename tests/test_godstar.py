@@ -257,6 +257,39 @@ class StoreTest(unittest.TestCase):
         self.assertIn("on_conflict=order_no,kind", calls[1])
         self.assertIn("on_conflict=code", calls[2])
 
+    def test_upsert_normalizes_row_keys(self):
+        # رگرسیون (v1.0.4): ردیف خوانده‌شده از دیتابیس ستون confirmed_at
+        # را دارد (null) ولی سفارش تازه‌ساخته آن را ندارد؛ upsert دسته‌ای
+        # با کلیدهای ناهمگون را PostgREST با PGRST102 رد می‌کند و کل
+        # جدول orders ذخیره نمی‌شد (GS-1002 هرگز در دیتابیس نوشته نشد).
+        import db as _db
+        store = Store(state_file=os.path.join(self.tmp.name, "s6.json"),
+                      supabase_url="https://example.supabase.co",
+                      supabase_key="k")
+        sent = []
+
+        class _Resp:
+            status_code = 201
+            ok = True
+            text = ""
+
+        orig_post = _db.requests.post
+        _db.requests.post = lambda url, **kw: sent.append(kw.get("json")) or _Resp()
+        try:
+            store._sb_upsert_rows("orders", [
+                {"order_no": "GS-1001", "status": "rejected",
+                 "confirmed_at": None},
+                {"order_no": "GS-1002", "status": "pending"},
+            ])
+        finally:
+            _db.requests.post = orig_post
+        self.assertEqual(len(sent), 1)
+        rows = sent[0]
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(set(rows[0]), set(rows[1]))
+        self.assertIsNone(rows[1]["confirmed_at"])
+        self.assertEqual(rows[0]["order_no"], "GS-1001")
+
     def test_upsert_error_includes_response_body(self):
         # علت دقیق سوپابیس (مثلاً ستون ناشناخته) باید در لاگ دیده شود،
         # نه فقط «400 Bad Request».
@@ -464,6 +497,48 @@ class BotOrderTest(unittest.TestCase):
                                      "has_photo": True,
                                      "photo_file_name": "err.png"})
         godstar.handle_web_app_data(self.store, msg)
+        user_texts = [t for cid, t, _ in self.sent if cid == 111]
+        self.assertTrue(any("عکست را همین‌جا" in t for t in user_texts))
+
+    def test_webapp_support_photo_data_reaches_admin(self):
+        # رگرسیون (v1.0.4): عکس پشتیبانی که از مینی‌اپ کوچک‌شده می‌رسد،
+        # با بایت واقعی به ادمین فوروارد می‌شود، نه فقط با یادداشت متنی.
+        import base64 as _b64
+        calls = []
+        orig = godstar.send_photo_bytes
+        godstar.send_photo_bytes = lambda chat_id, photo_bytes, caption=None, reply_markup=None: calls.append(
+            (chat_id, photo_bytes, caption)) or {"message_id": 55}
+        try:
+            raw = b"\xff\xd8\xff\xe0fake-jpeg-bytes"
+            data_url = "data:image/jpeg;base64," + _b64.b64encode(raw).decode()
+            msg = self._webapp_msg(111, {"type": "support_message",
+                                         "to": "support",
+                                         "text": "سلام، خطا می‌گیرم",
+                                         "has_photo": True,
+                                         "photo_file_name": "err.jpg",
+                                         "photo_data": data_url})
+            godstar.handle_web_app_data(self.store, msg)
+        finally:
+            godstar.send_photo_bytes = orig
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][0], "278899906")
+        self.assertEqual(calls[0][1], raw)
+        self.assertIn("سلام، خطا می‌گیرم", calls[0][2])
+        # چون عکس واقعاً رسید، تاییدیه نباید بگوید عکس را در چت بفرست
+        user_texts = [t for cid, t, _ in self.sent if cid == 111]
+        self.assertFalse(any("عکست را همین‌جا" in t for t in user_texts))
+
+    def test_webapp_support_photo_data_invalid_falls_back(self):
+        # photo_data خراب → رفتار قبلی: یادداشت «عکس هم دارد» + درخواست
+        # فرستادن عکس در چت؛ چیزی خراب نمی‌شود.
+        msg = self._webapp_msg(111, {"type": "support_message",
+                                     "to": "support",
+                                     "text": "سلام",
+                                     "has_photo": True,
+                                     "photo_file_name": "err.jpg",
+                                     "photo_data": "not-a-data-url!!!"})
+        godstar.handle_web_app_data(self.store, msg)
+        self.assertTrue(any("عکس هم دارد" in t for _, t, _ in self.sent))
         user_texts = [t for cid, t, _ in self.sent if cid == 111]
         self.assertTrue(any("عکست را همین‌جا" in t for t in user_texts))
 
@@ -1499,6 +1574,19 @@ class LiveOrdersAndSupportPhotoTest(unittest.TestCase):
         self.assertIn(".bubble.photo img", self.css)
         self.assertIn("#support-photo-pick", self.css)
 
+    def test_support_photo_data_sent_to_admin(self):
+        # v1.0.4: عکس پشتیبانی کوچک می‌شود و با photo_data همراه پیام
+        # فرستاده می‌شود تا ادمین خود عکس را ببیند.
+        self.assertIn("function downscalePhoto(", self.js)
+        self.assertIn("photo_data: dataUrl", self.js)
+        self.assertIn('toDataURL("image/jpeg", 0.8)', self.js)
+
+    def test_wallet_checkbox_always_hides_manual(self):
+        # v1.0.4: زدن تیک کیف پول، روش‌های دستی را پنهان می‌کند حتی اگر
+        # موجودی کم باشد؛ در آن صورت هشدار کمبود موجودی نشان داده می‌شود.
+        self.assertIn('$("pay-manual-wrap").classList.toggle("hidden", walletPay);', self.js)
+        self.assertIn("کافی نیست", self.js)
+
 
 class SupportReplyTest(unittest.TestCase):
     """دکمه‌ی «✏️ پاسخ» زیر پیام پشتیبانی در چت ادمین: با زدن آن ادمین
@@ -1614,10 +1702,14 @@ class PayFromWalletTest(unittest.TestCase):
                        'id="pay-upload-wrap"', 'id="pay-hash-wrap"'):
             self.assertIn(needle, segment)
 
-    def test_render_payment_hides_manual_only_when_wallet_covers(self):
+    def test_render_payment_hides_manual_when_wallet_checked(self):
+        # v1.0.4: زدن تیک کیف پول، روش‌های دستی را پنهان می‌کند حتی اگر
+        # موجودی کم باشد؛ در آن صورت هشدار کمبود موجودی نشان داده می‌شود.
         self.assertIn(
-            '$("pay-manual-wrap").classList.toggle("hidden", walletPay && walletOk)',
+            '$("pay-manual-wrap").classList.toggle("hidden", walletPay);',
             self.js)
+        self.assertIn("کافی نیست", self.js)
+        self.assertNotIn("walletPay && walletOk)", self.js)
 
     def test_wallet_pay_submits_without_receipt(self):
         self.assertIn("receipt_kind: walletPay ? null", self.js)
