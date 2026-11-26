@@ -1054,6 +1054,379 @@ class RemindersAndReorderTest(unittest.TestCase):
         self.assertTrue(row.get("active"))
 
 
+class InitDataAndInboxTest(unittest.TestCase):
+    """اعتبارسنجی initData، صندوق وب‌اپ و دلایل رد سفارش (نسخه‌ی ۱٫۰)."""
+    TOKEN = "test-bot-token-123"
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.store = Store(state_file=os.path.join(self.tmp.name, "state.json"))
+        self.store.load()
+        godstar.ensure_defaults(self.store)
+        self.sent = []
+        self.api_calls = []
+        self.deleted_rows = []
+        self._row_n = 0
+        self._orig_send = godstar.send_message
+        self._orig_api = godstar.api
+        self._orig_admin = godstar.ADMIN_CHAT_ID
+        self._orig_token = godstar.TOKEN
+        self._orig_inbox_check = godstar._LAST_INBOX_CHECK
+        godstar.send_message = lambda chat_id, text, reply_markup=None: self.sent.append(
+            (chat_id, text, reply_markup)) or {"message_id": 1}
+        godstar.api = lambda method, **data: self.api_calls.append(
+            (method, data)) or {"message_id": 99}
+        godstar.ADMIN_CHAT_ID = "278899906"
+        godstar.TOKEN = self.TOKEN
+        godstar._LAST_INBOX_CHECK = 0
+
+    def tearDown(self):
+        godstar.send_message = self._orig_send
+        godstar.api = self._orig_api
+        godstar.ADMIN_CHAT_ID = self._orig_admin
+        godstar.TOKEN = self._orig_token
+        godstar._LAST_INBOX_CHECK = self._orig_inbox_check
+        self.tmp.cleanup()
+
+    def _make_init_data(self, user_id, token=None, auth_date=None):
+        import hashlib
+        import hmac as _hmac
+        import json as _json
+        import time as _time
+        import urllib.parse as _up
+        params = {
+            "auth_date": str(auth_date if auth_date is not None else int(_time.time())),
+            "query_id": "AAHdF6IQAAAAAN0XohDhrOrc",
+            "user": _json.dumps({"id": user_id, "first_name": "Test",
+                                 "username": "t"}, ensure_ascii=False),
+        }
+        check = "\n".join(f"{k}={params[k]}" for k in sorted(params))
+        secret = hashlib.sha256((token or self.TOKEN).encode()).digest()
+        params["hash"] = _hmac.new(secret, check.encode(),
+                                   hashlib.sha256).hexdigest()
+        return _up.urlencode(params)
+
+    def _inbox_row(self, user_id, payload, init_data=None):
+        self._row_n += 1
+        return {"id": f"row-{self._row_n}",
+                "user_id": user_id,
+                "init_data": init_data if init_data is not None
+                            else self._make_init_data(user_id),
+                "payload": payload,
+                "created_at": "2026-11-24T10:00:00+00:00"}
+
+    def _stub_inbox(self, rows):
+        fetched = []
+
+        def fetch():
+            fetched.append(1)
+            return list(rows)
+
+        def delete(row_id):
+            self.deleted_rows.append(row_id)
+        self.store.fetch_inbox_rows = fetch
+        self.store.delete_inbox_row = delete
+        return fetched
+
+    def _admin_query(self, data):
+        return {"data": data, "id": "q1",
+                "message": {"chat": {"id": 278899906}}}
+
+    # ---- validate_init_data ----
+    def test_validate_init_data_valid(self):
+        user = godstar.validate_init_data(self._make_init_data(111), self.TOKEN)
+        self.assertIsNotNone(user)
+        self.assertEqual(user["id"], 111)
+
+    def test_validate_init_data_tampered(self):
+        init_data = self._make_init_data(111).replace("Test", "Mallory")
+        self.assertIsNone(godstar.validate_init_data(init_data, self.TOKEN))
+
+    def test_validate_init_data_expired(self):
+        import time as _time
+        old = self._make_init_data(111, auth_date=int(_time.time()) - 25 * 3600)
+        self.assertIsNone(godstar.validate_init_data(old, self.TOKEN))
+
+    def test_validate_init_data_missing_hash(self):
+        import urllib.parse as _up
+        params = {"auth_date": "1700000000", "query_id": "x",
+                  "user": '{"id": 111}'}
+        self.assertIsNone(
+            godstar.validate_init_data(_up.urlencode(params), self.TOKEN))
+
+    def test_validate_init_data_wrong_token(self):
+        init_data = self._make_init_data(111, token="other-token")
+        self.assertIsNone(godstar.validate_init_data(init_data, self.TOKEN))
+
+    def test_validate_init_data_empty(self):
+        self.assertIsNone(godstar.validate_init_data("", self.TOKEN))
+        self.assertIsNone(godstar.validate_init_data(self._make_init_data(111), ""))
+
+    # ---- صندوق وب‌اپ ----
+    def test_inbox_order_row_creates_order(self):
+        payload = {"type": "order", "service": "members",
+                   "details": {"count": 1000, "channel_id": "@GodNews24"},
+                   "tx_hash": "abc123"}
+        row = self._inbox_row(111, payload)
+        self._stub_inbox([row])
+        godstar.process_webapp_inbox(self.store)
+        order = self.store.get_order("GS-1001")
+        self.assertIsNotNone(order)
+        self.assertEqual(order["amount"], "3.00")
+        self.assertTrue(any("سفارش شما ثبت شد" in t for _, t, _ in self.sent))
+        self.assertTrue(any("🆕 سفارش جدید" in t for _, t, _ in self.sent))
+        self.assertEqual(self.deleted_rows, [row["id"]])
+
+    def test_inbox_wallet_charge_row(self):
+        payload = {"type": "wallet_charge", "amount_usdt": 20,
+                   "receipt_kind": "hash", "receipt_hash": "0x789"}
+        row = self._inbox_row(111, payload)
+        self._stub_inbox([row])
+        godstar.process_webapp_inbox(self.store)
+        order = self.store.get_order("GS-1001")
+        self.assertIsNotNone(order)
+        self.assertEqual(order["type"], "wallet_charge")
+        self.assertEqual(order["amount"], "20.00")
+        self.assertEqual(self.deleted_rows, [row["id"]])
+
+    def test_inbox_invalid_row_deleted_creates_nothing(self):
+        row = self._inbox_row(111, {"type": "my_orders"},
+                              init_data="query_id=x&user=%7B%22id%22%3A111%7D"
+                                        "&auth_date=1700000000")
+        self._stub_inbox([row])
+        godstar.process_webapp_inbox(self.store)
+        self.assertIsNone(self.store.get_order("GS-1001"))
+        self.assertEqual(self.sent, [])
+        self.assertEqual(self.deleted_rows, [row["id"]])
+
+    def test_inbox_bad_row_does_not_stop_others(self):
+        bad = self._inbox_row(111, {"type": "my_orders"}, init_data="garbage")
+        good = self._inbox_row(222, {"type": "order", "service": "members",
+                                     "details": {"count": 1000,
+                                                 "channel_id": "@GodNews24"},
+                                     "tx_hash": "abc"})
+        self._stub_inbox([bad, good])
+        godstar.process_webapp_inbox(self.store)
+        order = self.store.get_order("GS-1001")
+        self.assertIsNotNone(order)
+        self.assertEqual(order["user_id"], 222)
+        self.assertEqual(sorted(self.deleted_rows), sorted([bad["id"], good["id"]]))
+
+    def test_inbox_reorder_payload(self):
+        orig = godstar.place_order(
+            self.store, 111, "members",
+            {"count": 1000, "channel_id": "@GodNews24"}, tx_hash="abc")
+        self.sent.clear()
+        row = self._inbox_row(111, {"type": "reorder",
+                                    "order_no": orig["order_no"]})
+        self._stub_inbox([row])
+        godstar.process_webapp_inbox(self.store)
+        self.assertIsNotNone(self.store.get_order("GS-1002"))
+        self.assertTrue(any("سفارش دوباره ثبت شد" in t for _, t, _ in self.sent))
+        self.assertEqual(self.deleted_rows, [row["id"]])
+
+    def test_inbox_processing_exception_deletes_and_notifies(self):
+        row = self._inbox_row(111, {"type": "my_orders"})
+        self._stub_inbox([row])
+
+        def boom(store, chat_id, payload):
+            raise RuntimeError("boom")
+        orig = godstar.process_webapp_payload
+        godstar.process_webapp_payload = boom
+        try:
+            godstar.process_webapp_inbox(self.store)
+        finally:
+            godstar.process_webapp_payload = orig
+        self.assertEqual(self.deleted_rows, [row["id"]])
+        self.assertTrue(any("مشکلی در ثبت سفارشت پیش آمد" in t
+                            for c, t, _ in self.sent if c == 111))
+
+    def test_inbox_throttle_checks_at_most_once_per_ten_seconds(self):
+        row = self._inbox_row(111, {"type": "my_orders"})
+        fetched = self._stub_inbox([row])
+        godstar.process_webapp_inbox(self.store)
+        godstar.process_webapp_inbox(self.store)
+        self.assertEqual(len(fetched), 1)
+        godstar._LAST_INBOX_CHECK = 0
+        godstar.process_webapp_inbox(self.store)
+        self.assertEqual(len(fetched), 2)
+
+    # ---- متدهای صندوق در db ----
+    def test_fetch_inbox_rows_sorts_by_created_at(self):
+        store = Store(state_file=os.path.join(self.tmp.name, "s-inbox.json"),
+                      supabase_url="https://example.supabase.co",
+                      supabase_key="k")
+        store._sb_get_all = lambda table: [
+            {"id": "b", "created_at": "2026-11-24T10:02:00+00:00"},
+            {"id": "a", "created_at": "2026-11-24T10:01:00+00:00"},
+        ] if table == "webapp_inbox" else []
+        rows = store.fetch_inbox_rows()
+        self.assertEqual([r["id"] for r in rows], ["a", "b"])
+
+    def test_fetch_inbox_rows_empty_without_supabase(self):
+        self.assertEqual(self.store.fetch_inbox_rows(), [])
+        self.store.delete_inbox_row("whatever")  # no-op, must not raise
+
+    def test_delete_inbox_row_uses_id(self):
+        store = Store(state_file=os.path.join(self.tmp.name, "s-inbox2.json"),
+                      supabase_url="https://example.supabase.co",
+                      supabase_key="k")
+        calls = []
+        store._sb_delete = lambda table, key_col, key_val: calls.append(
+            (table, key_col, key_val))
+        store.delete_inbox_row("550e8400-1234-5678-9abc-def012345678")
+        self.assertEqual(calls, [("webapp_inbox", "id",
+                                  "550e8400-1234-5678-9abc-def012345678")])
+
+    # ---- دلایل رد سفارش ----
+    def test_reject_preset_reason_flow(self):
+        order = self.store.create_order(111, "order", "members",
+                                        {"count": 1000}, "3")
+        godstar.handle_callback(self.store, self._admin_query(
+            f"reject:{order['order_no']}"))
+        # هنوز رد نشده؛ ادمین باید دلیل را انتخاب کند
+        self.assertEqual(self.store.get_order(order["order_no"])["status"],
+                         "pending")
+        picker = [s for s in self.sent if "دلیل رد را انتخاب کن" in s[1]]
+        self.assertEqual(len(picker), 1)
+        markup = picker[0][2]
+        texts = [b["text"] for row in markup["inline_keyboard"] for b in row]
+        for reason in godstar.REJECT_REASONS:
+            self.assertIn(reason, texts)
+        self.assertIn("✏️ تایپ دلیل", texts)
+        self.assertIn("لغو", texts)
+        # انتخاب اولین دلیل آماده
+        self.sent.clear()
+        godstar.handle_callback(self.store, self._admin_query(
+            f"reject_reason:{order['order_no']}:0"))
+        self.assertEqual(self.store.get_order(order["order_no"])["status"],
+                         "rejected")
+        self.assertEqual(
+            self.store.get_order(order["order_no"])["details"]["reject_reason"],
+            godstar.REJECT_REASONS[0])
+        self.assertTrue(any("دلیل: " + godstar.REJECT_REASONS[0] in t
+                            for c, t, _ in self.sent if c == 111))
+        self.assertTrue(any("رد شد" in t for c, t, _ in self.sent
+                            if str(c) == "278899906"))
+
+    def test_reject_typed_reason_via_prompt(self):
+        order = self.store.create_order(111, "order", "members",
+                                        {"count": 1000}, "3")
+        godstar.handle_callback(self.store, self._admin_query(
+            f"reject:{order['order_no']}"))
+        godstar.handle_callback(self.store, self._admin_query(
+            f"reject_reason_type:{order['order_no']}"))
+        prompt = self.store.state.get("pending_prompt", {}).get("278899906")
+        self.assertIsNotNone(prompt)
+        self.assertEqual(prompt["cmd"], f"/reject_reason {order['order_no']}")
+        self.assertTrue(any("دلیل رد سفارش" in t and "تایپ کن" in t
+                            for _, t, _ in self.sent))
+        self.sent.clear()
+        msg = {"chat": {"id": 278899906}, "from": {"id": 278899906},
+               "text": "رسید جعلی است"}
+        godstar.handle_message(self.store, msg)
+        self.assertEqual(self.store.get_order(order["order_no"])["status"],
+                         "rejected")
+        self.assertEqual(
+            self.store.get_order(order["order_no"])["details"]["reject_reason"],
+            "رسید جعلی است")
+        self.assertTrue(any("دلیل: رسید جعلی است" in t
+                            for c, t, _ in self.sent if c == 111))
+
+    def test_reject_cancel_keeps_pending(self):
+        order = self.store.create_order(111, "order", "members",
+                                        {"count": 1000}, "3")
+        godstar.handle_callback(self.store, self._admin_query(
+            f"reject:{order['order_no']}"))
+        godstar.handle_callback(self.store, self._admin_query(
+            f"reject_cancel:{order['order_no']}"))
+        self.assertEqual(self.store.get_order(order["order_no"])["status"],
+                         "pending")
+        self.assertTrue(any("در انتظار می‌ماند" in t for _, t, _ in self.sent))
+
+    def test_reject_command_asks_reason_first(self):
+        order = self.store.create_order(111, "order", "members",
+                                        {"count": 1000}, "3")
+        msg = {"chat": {"id": 278899906}, "from": {"id": 278899906},
+               "text": f"/reject {order['order_no']}"}
+        godstar.handle_message(self.store, msg)
+        self.assertEqual(self.store.get_order(order["order_no"])["status"],
+                         "pending")
+        self.assertTrue(any("دلیل رد را انتخاب کن" in t for _, t, _ in self.sent))
+
+    def test_reject_with_reason_refunds_wallet_and_stores_reason(self):
+        self.store.credit_wallet(111, 20)
+        order = godstar.place_order(self.store, 111, "members",
+                                    {"count": 1000, "channel_id": "@GodNews24"},
+                                    paid_by_wallet=True)
+        self.assertEqual(self.store.wallet_balance(111), 17.0)
+        godstar.reject_order(self.store, order["order_no"], "رسید معتبر نیست")
+        self.assertEqual(self.store.wallet_balance(111), 20.0)
+        self.assertEqual(
+            self.store.get_order(order["order_no"])["details"]["reject_reason"],
+            "رسید معتبر نیست")
+        self.assertTrue(any("دلیل: رسید معتبر نیست" in t for _, t, _ in self.sent))
+
+    def test_reject_without_reason_has_no_reason_line(self):
+        order = self.store.create_order(111, "order", "members",
+                                        {"count": 1000}, "3")
+        godstar.reject_order(self.store, order["order_no"])
+        self.assertFalse(any("دلیل:" in t for _, t, _ in self.sent))
+        self.assertNotIn("reject_reason",
+                         self.store.get_order(order["order_no"])["details"])
+
+
+class SwipeTabsTest(unittest.TestCase):
+    """تب‌های کشویی صفحه‌ی اصلی: خدمات / سفارش‌های من / پشتیبانی پنل‌های
+    همان صفحه‌اند، نه صفحه‌ی جدا؛ بالای صفحه ثابت می‌ماند."""
+
+    def setUp(self):
+        self.root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        with open(os.path.join(self.root, "webapp", "index.html"),
+                  encoding="utf-8") as f:
+            self.html = f.read()
+        with open(os.path.join(self.root, "webapp", "app.js"),
+                  encoding="utf-8") as f:
+            self.js = f.read()
+        with open(os.path.join(self.root, "webapp", "style.css"),
+                  encoding="utf-8") as f:
+            self.css = f.read()
+
+    def test_three_panels_in_one_swipe_track(self):
+        self.assertIn('id="swipe-main"', self.html)
+        self.assertIn('id="swipe-track"', self.html)
+        for panel in ("home", "orders", "support"):
+            self.assertIn(f'data-panel="{panel}"', self.html)
+
+    def test_orders_and_support_are_not_separate_screens(self):
+        self.assertNotIn("screen-orders", self.html)
+        self.assertNotIn("screen-support", self.html)
+        self.assertNotIn("screen-orders", self.js)
+        self.assertNotIn("screen-support", self.js)
+        # محتوای هر دو پنل هنوز هست و هر آی‌دی فقط یک بار آمده
+        for _id in ("orders-list", "chat-box", "faq-list", "support-input"):
+            self.assertEqual(self.html.count(f'id="{_id}"'), 1, _id)
+
+    def test_sticky_header_and_swipe_css(self):
+        self.assertIn(".main-head", self.css)
+        self.assertIn("position: sticky", self.css)
+        self.assertIn(".swipe-track", self.css)
+        self.assertIn("touch-action: pan-y", self.css)
+
+    def test_js_has_panel_navigation(self):
+        self.assertIn('PANELS = ["home", "orders", "support"]', self.js)
+        self.assertIn("function setPanel(", self.js)
+        self.assertIn("function bindSwipe(", self.js)
+        self.assertIn("touchstart", self.js)
+        self.assertIn("touchend", self.js)
+        # باز کردن پنل سفارش‌ها داده‌ی واقعی را تازه می‌کند
+        self.assertIn('PANELS[currentPanel] === "orders" && !DEMO) loadMyData()',
+                      self.js)
+        # تب‌ها هنوز با data-nav مشخص می‌شوند
+        self.assertIn('data-nav="orders"', self.html)
+        self.assertIn('data-nav="support"', self.html)
+
+
 class GetUpdatesTest(unittest.TestCase):
     def setUp(self):
         self._orig_get = godstar.requests.get
