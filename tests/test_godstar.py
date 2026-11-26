@@ -1535,11 +1535,17 @@ class SwipeTabsTest(unittest.TestCase):
         self.assertIn("touchstart", self.js)
         self.assertIn("touchend", self.js)
         # باز کردن پنل سفارش‌ها داده‌ی واقعی را تازه می‌کند و تازه‌سازی
-        # خودکار (v1.0.3) را روشن می‌کند؛ بیرون آمدن از پنل آن را قطع می‌کند
-        self.assertIn('if (PANELS[currentPanel] === "orders") {', self.js)
+        # خودکار (v1.0.3) را روشن می‌کند؛ بیرون آمدن از پنل آن را قطع می‌کند.
+        # فقط وقتی پنل واقعاً عوض شده (v1.0.6): زدن روی صفحه نباید لیست
+        # را از نو بسازد، وگرنه دکمه‌ای که کاربر زده زیر انگشتش نابود
+        # می‌شود و ضربه‌اش گم می‌شود (دکمه‌ی «دوباره» در ۱٫۰٫۵ همین‌طور
+        # بی‌اثر مانده بود).
+        self.assertIn('if (changed && PANELS[currentPanel] === "orders") {', self.js)
         self.assertIn("if (!DEMO) loadMyData();", self.js)
         self.assertIn("startOrdersPolling(15000, 0);", self.js)
         self.assertIn("stopOrdersPolling();", self.js)
+        # ضربه‌ی ساده (بدون کشیدن) نباید setPanel صدا بزند
+        self.assertIn("if (!dragging) { return; }", self.js)
         # تب‌ها هنوز با data-nav مشخص می‌شوند
         self.assertIn('data-nav="orders"', self.html)
         self.assertIn('data-nav="support"', self.html)
@@ -1884,6 +1890,246 @@ class ReceiptPhotoAndSupportContextTest(unittest.TestCase):
         self.assertEqual(new["service"], "members")
         self.assertEqual(new["status"], "pending")
         self.assertTrue(any("سفارش دوباره ثبت شد" in t for _, t, _ in self.sent))
+
+
+class AdMediaAndReorderLogTest(unittest.TestCase):
+    """v1.0.6: عکس/فیلم تبلیغ سفارش Ads با بایت واقعی به ادمین می‌رسد؛
+    خط «مشتری در چت می‌فرستد» وقتی رسید رسیده پنهان می‌شود؛ سفارش
+    دوباره در لاگ ردی برمی‌دارد (درخواست + نتیجه + شماره سفارش در خطا)."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.store = Store(state_file=os.path.join(self.tmp.name, "state.json"))
+        self.store.load()
+        godstar.ensure_defaults(self.store)
+        self.sent = []
+        self.photo_calls = []
+        self.video_calls = []
+        self._orig_send = godstar.send_message
+        self._orig_api = godstar.api
+        self._orig_photo = godstar.send_photo_bytes
+        self._orig_video = godstar.send_video_bytes
+        self._orig_admin = godstar.ADMIN_CHAT_ID
+        godstar.send_message = lambda chat_id, text, reply_markup=None: self.sent.append(
+            (chat_id, text, reply_markup)) or {"message_id": 1}
+        godstar.api = lambda method, **data: {"message_id": 99}
+        godstar.send_photo_bytes = lambda chat_id, photo_bytes, caption=None, reply_markup=None: self.photo_calls.append(
+            (chat_id, photo_bytes, caption)) or {"message_id": 55,
+                                                 "photo": [{"file_id": "SMALL"},
+                                                           {"file_id": "BIGFILE"}]}
+        godstar.send_video_bytes = lambda chat_id, video_bytes, caption=None, reply_markup=None: self.video_calls.append(
+            (chat_id, video_bytes, caption)) or {"message_id": 56,
+                                                 "video": {"file_id": "VIDFILE"}}
+        godstar.ADMIN_CHAT_ID = "278899906"
+
+    def tearDown(self):
+        godstar.send_message = self._orig_send
+        godstar.api = self._orig_api
+        godstar.send_photo_bytes = self._orig_photo
+        godstar.send_video_bytes = self._orig_video
+        godstar.ADMIN_CHAT_ID = self._orig_admin
+        self.tmp.cleanup()
+
+    def _webapp_msg(self, chat_id, payload):
+        import json as _json
+        return {"chat": {"id": chat_id}, "from": {"id": chat_id, "username": "u"},
+                "web_app_data": {"data": _json.dumps(payload, ensure_ascii=False)}}
+
+    def _data_url(self, raw, mime="image/jpeg"):
+        import base64 as _b64
+        return "data:" + mime + ";base64," + _b64.b64encode(raw).decode()
+
+    def _admin_texts(self):
+        return [t for c, t, _ in self.sent if c == "278899906"]
+
+    def _ads_order(self, media, media_data=None):
+        payload = {"type": "order", "service": "ads", "views": 100000,
+                   "media": media, "ad_text": "تبلیغ تست",
+                   "channel_id": "@GodNews24", "tx_hash": "abc123"}
+        if media_data is not None:
+            payload["ad_media_data"] = media_data
+            payload["ad_media_kind"] = media
+        godstar.handle_web_app_data(
+            self.store, self._webapp_msg(111, payload))
+        return self.store.get_order("GS-1001")
+
+    def test_ad_photo_reaches_admin(self):
+        raw = b"\xff\xd8\xff\xe0fake-ad-photo"
+        order = self._ads_order("photo", self._data_url(raw))
+        self.assertIsNotNone(order)
+        self.assertEqual(len(self.photo_calls), 1)
+        self.assertEqual(self.photo_calls[0][0], "278899906")
+        self.assertEqual(self.photo_calls[0][1], raw)
+        self.assertIn("GS-1001", self.photo_calls[0][2])
+        self.assertEqual(order["details"].get("ad_media_file_id"), "BIGFILE")
+        self.assertTrue(any("رسانه‌ی تبلیغ: عکس ارسال شد" in t
+                            for t in self._admin_texts()))
+
+    def test_ad_video_reaches_admin(self):
+        raw = b"\x00\x00\x00\x18ftypmp42fake-ad-video"
+        order = self._ads_order(
+            "video", self._data_url(raw, mime="video/mp4"))
+        self.assertIsNotNone(order)
+        self.assertEqual(len(self.video_calls), 1)
+        self.assertEqual(self.video_calls[0][0], "278899906")
+        self.assertEqual(self.video_calls[0][1], raw)
+        self.assertIn("GS-1001", self.video_calls[0][2])
+        self.assertEqual(order["details"].get("ad_media_file_id"), "VIDFILE")
+        self.assertTrue(any("رسانه‌ی تبلیغ: ویدیو ارسال شد" in t
+                            for t in self._admin_texts()))
+
+    def test_ad_media_missing_falls_back_to_chat_note(self):
+        order = self._ads_order("photo")
+        self.assertIsNotNone(order)
+        self.assertEqual(self.photo_calls, [])
+        self.assertEqual(self.video_calls, [])
+        self.assertTrue(any("عکس تبلیغ را همین‌جا" in t
+                            for _, t, _ in self.sent))
+        self.assertTrue(any("رسانه‌ی تبلیغ: عکس — مشتری در چت می‌فرستد" in t
+                            for t in self._admin_texts()))
+
+    def test_receipt_chat_note_hidden_when_photo_delivered(self):
+        raw = b"\xff\xd8\xff\xe0fake-receipt-jpeg"
+        msg = self._webapp_msg(111, {"type": "order", "service": "members",
+                                     "details": {"count": 5000, "channel_id": "@GodNews24"},
+                                     "receipt_kind": "photo",
+                                     "receipt_file_name": "r.jpg",
+                                     "receipt_photo_data": self._data_url(raw)})
+        godstar.handle_web_app_data(self.store, msg)
+        self.assertTrue(any("رسید: عکس ارسال شده است" in t
+                            for t in self._admin_texts()))
+        self.assertFalse(any("مشتری در چت می‌فرستد" in t
+                             for t in self._admin_texts()))
+
+    def test_reorder_logs_request_and_result(self):
+        msg = self._webapp_msg(111, {"type": "order", "service": "members",
+                                     "details": {"count": 8000, "channel_id": "@GodNews24"},
+                                     "tx_hash": "abc123"})
+        godstar.handle_web_app_data(self.store, msg)
+        godstar.reject_order(self.store, "GS-1001", "تست")
+        import io as _io
+        from contextlib import redirect_stdout as _redirect
+        buf = _io.StringIO()
+        with _redirect(buf):
+            godstar.handle_web_app_data(
+                self.store,
+                self._webapp_msg(111, {"type": "reorder", "order_no": "GS-1001"}))
+        out = buf.getvalue()
+        self.assertIn("درخواست GS-1001", out)
+        self.assertIn("GS-1001 → GS-1002", out)
+        self.assertIsNotNone(self.store.get_order("GS-1002"))
+
+    def test_reorder_error_log_names_order(self):
+        import io as _io
+        from contextlib import redirect_stdout as _redirect
+        buf = _io.StringIO()
+        with _redirect(buf):
+            godstar.handle_web_app_data(
+                self.store,
+                self._webapp_msg(111, {"type": "reorder", "order_no": "GS-9999"}))
+        out = buf.getvalue()
+        self.assertIn("type=reorder order_no=GS-9999", out)
+        self.assertTrue(any("⚠️" in t for _, t, _ in self.sent))
+
+    def test_decode_data_url(self):
+        self.assertEqual(godstar._decode_data_url(
+            self._data_url(b"hello")), b"hello")
+        self.assertIsNone(godstar._decode_data_url(None))
+        self.assertIsNone(godstar._decode_data_url("not-base64!!!"))
+        self.assertIsNone(godstar._decode_data_url(
+            self._data_url(b"x" * (6 * 1024 * 1024))))
+        # _decode_photo_data هنوز همان رفتار قبلی را دارد
+        self.assertEqual(godstar._decode_photo_data(
+            self._data_url(b"\xff\xd8\xff\xe0x")), b"\xff\xd8\xff\xe0x")
+
+
+class AdminUsersListTest(unittest.TestCase):
+    """v1.0.6: دستور /users لیست کاربران را با آیدی نشان می‌دهد؛ رسیدی
+    که مشتری در چت می‌فرستد هم نام و آیدی فرستنده را به ادمین می‌گوید."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.store = Store(state_file=os.path.join(self.tmp.name, "state.json"))
+        self.store.load()
+        godstar.ensure_defaults(self.store)
+        self.sent = []
+        self.api_calls = []
+        self._orig_send = godstar.send_message
+        self._orig_api = godstar.api
+        self._orig_admin = godstar.ADMIN_CHAT_ID
+        godstar.send_message = lambda chat_id, text, reply_markup=None: self.sent.append(
+            (chat_id, text, reply_markup)) or {"message_id": 1}
+        godstar.api = lambda method, **data: self.api_calls.append(
+            (method, data)) or {"message_id": 99}
+        godstar.ADMIN_CHAT_ID = "278899906"
+
+    def tearDown(self):
+        godstar.send_message = self._orig_send
+        godstar.api = self._orig_api
+        godstar.ADMIN_CHAT_ID = self._orig_admin
+        self.tmp.cleanup()
+
+    def test_users_command_lists_users_with_ids(self):
+        alice = self.store.ensure_user(111, "alice", "آلیس")
+        alice["completed_orders"] = 3
+        alice["wallet_balance"] = "5"
+        self.store.ensure_user(222, "bob", "باب")
+        godstar.handle_admin_command(self.store, 278899906, "/users")
+        to_admin = [t for c, t, _ in self.sent if c == 278899906]
+        self.assertEqual(len(to_admin), 1)
+        text = to_admin[0]
+        self.assertIn("2 نفر", text)
+        self.assertIn("آلیس", text)
+        self.assertIn("111", text)
+        self.assertIn("باب", text)
+        self.assertIn("222", text)
+        self.assertIn("3 سفارش", text)
+
+    def test_users_command_empty(self):
+        godstar.handle_admin_command(self.store, 278899906, "/users")
+        self.assertTrue(any("هنوز کسی" in t for _, t, _ in self.sent))
+
+    def test_list_users_newest_first(self):
+        old = self.store.ensure_user(111, "old", "قدیمی")
+        old["created_at"] = "2026-11-25T10:00:00"
+        new = self.store.ensure_user(222, "new", "تازه")
+        new["created_at"] = "2026-11-26T10:00:00"
+        users = self.store.list_users()
+        self.assertEqual([u["chat_id"] for u in users], [222, 111])
+
+    def test_receipt_photo_forward_includes_sender_id(self):
+        self.store.ensure_user(111, "testuser", "تست")
+        godstar.place_order(self.store, 111, "members",
+                            {"count": 1000, "channel_id": "@GodNews24"},
+                            defer_receipt=True)
+        ok = godstar.attach_receipt(
+            self.store, 111,
+            {"photo": [{"file_id": "SMALL"}, {"file_id": "PHOTOFILE"}],
+             "text": ""})
+        self.assertTrue(ok)
+        photos = [d for m, d in self.api_calls if m == "sendPhoto"]
+        self.assertEqual(len(photos), 1)
+        self.assertEqual(photos[0]["photo"], "PHOTOFILE")
+        self.assertIn("(111)", photos[0]["caption"])
+        self.assertIn("تست", photos[0]["caption"])
+
+    def test_receipt_hash_forward_includes_sender_id(self):
+        self.store.ensure_user(111, "testuser", "تست")
+        godstar.place_order(self.store, 111, "members",
+                            {"count": 1000, "channel_id": "@GodNews24"},
+                            defer_receipt=True)
+        ok = godstar.attach_receipt(
+            self.store, 111, {"text": "0x" + "ab" * 32})
+        self.assertTrue(ok)
+        to_admin = [t for c, t, _ in self.sent if c == "278899906"]
+        self.assertTrue(any("(111)" in t and "تست" in t for t in to_admin))
+
+    def test_users_command_wired_into_menu_and_help(self):
+        self.assertIn("/users", godstar.ADMIN_COMMANDS)
+        self.assertEqual(godstar.ADMIN_KEYBOARD_COMMANDS.get("👥 کاربران"), "/users")
+        self.assertIn("👥 کاربران", godstar.ADMIN_COMMANDS_TEXT)
+        self.assertIn("/users", godstar.welcome_text(True))
+        self.assertNotIn("/users", godstar.welcome_text(False))
 
 
 class GetUpdatesTest(unittest.TestCase):
