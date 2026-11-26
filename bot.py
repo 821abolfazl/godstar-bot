@@ -35,7 +35,7 @@ from pricing import (WALLET_ADDRESS, ads_price, member_price, bot_price,
                      compute_order_price, loyalty_eligible,
                      is_valid_channel_id, is_valid_referral_code)
 
-BOT_VERSION = "2026-11-24-1.0"   # فقط توی لاگ و برای ادمین در /start نوشته می‌شه
+BOT_VERSION = "2026-11-26-1.0.1"   # فقط توی لاگ و برای ادمین در /start نوشته می‌شه
 BOT_USERNAME = "GodStarShopBot"  # ربات اصلی؛ هرگز GodStarServiceBot (بازنشسته) نیست
 WEBAPP_URL = os.environ.get("WEBAPP_URL") or "https://821abolfazl.github.io/godstar-bot/"
 
@@ -287,6 +287,14 @@ def order_admin_keyboard(order_no):
     return {"inline_keyboard": [[
         {"text": "✅ تایید", "callback_data": f"approve:{order_no}"},
         {"text": "❌ رد", "callback_data": f"reject:{order_no}"},
+    ]]}
+
+
+def support_reply_keyboard(customer_id):
+    """دکمه‌ی «✏️ پاسخ» زیر پیام پشتیبانی در چت ادمین — با زدن آن
+    ادمین جوابش را تایپ می‌کند و به همان مشتری فرستاده می‌شود."""
+    return {"inline_keyboard": [[
+        {"text": "✏️ پاسخ", "callback_data": f"support_reply:{customer_id}"},
     ]]}
 
 
@@ -1007,11 +1015,13 @@ def _forward_support_to_admin(store, chat_id, text="", photo_file_id="", label="
     user = store.get_user(chat_id) or {}
     name = user.get("first_name") or user.get("username") or str(chat_id)
     caption = f"{label}\nاز: {name} ({chat_id})"
+    kb = support_reply_keyboard(chat_id)
     if photo_file_id:
         res = api("sendPhoto", chat_id=ADMIN_CHAT_ID, photo=photo_file_id,
-                  caption=caption + (f"\n{text}" if text else ""))
+                  caption=caption + (f"\n{text}" if text else ""),
+                  reply_markup=json.dumps(kb, ensure_ascii=False))
     else:
-        res = send_message(ADMIN_CHAT_ID, caption + f"\n\n{text}")
+        res = send_message(ADMIN_CHAT_ID, caption + f"\n\n{text}", reply_markup=kb)
     if res and res.get("message_id"):
         store.map_support_message(res["message_id"], chat_id)
     return res
@@ -1102,6 +1112,17 @@ def handle_admin_command(store, chat_id, text):
             send_message(chat_id, f"❌ سفارش {order['order_no']} رد شد.\nدلیل: {reason}")
         except ValueError as ex:
             send_message(chat_id, f"⚠️ {ex}")
+    elif cmd == "/support_reply" and len(parts) >= 3:
+        # جواب تایپ‌شده‌ی ادمین به پیام پشتیبانی (از راه دکمه‌ی «✏️ پاسخ»):
+        # "/support_reply <chat_id> <متن جواب>"
+        try:
+            customer_id = int(parts[1])
+        except ValueError:
+            send_message(chat_id, "⚠️ آیدی مشتری نامعتبر است.")
+            return
+        reply_text = text.split(None, 2)[2].strip()
+        send_message(customer_id, reply_text, reply_markup=shop_button_markup())
+        send_message(chat_id, "✅ جواب به مشتری فرستاده شد.")
     elif cmd == "/codes":
         codes = store.list_codes()
         if not codes:
@@ -1457,6 +1478,17 @@ def handle_callback(store, query):
             answer_callback(query_id, "دلیل رد را انتخاب کن.")
         except ValueError as ex:
             answer_callback(query_id, str(ex))
+    elif data.startswith("support_reply:"):
+        customer_id = data[len("support_reply:"):]
+        if not customer_id.isdigit():
+            answer_callback(query_id, "مشتری نامعتبر است.")
+            return
+        store.state.setdefault("pending_prompt", {})[str(chat_id)] = {
+            "cmd": f"/support_reply {customer_id}", "at": time.time()}
+        store.dirty = True
+        send_message(chat_id,
+                     "جوابت به مشتری را تایپ کن.\nبرای لغو «لغو» را بفرست.")
+        answer_callback(query_id, "")
     else:
         answer_callback(query_id, "")
     store.save_if_dirty()
