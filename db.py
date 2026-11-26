@@ -601,16 +601,26 @@ class Store:
     def in_support_mode(self, chat_id):
         return bool(self.state["support_mode"].get(str(chat_id)))
 
-    def map_support_message(self, admin_message_id, customer_chat_id):
+    def map_support_message(self, admin_message_id, customer_chat_id,
+                            orig_text="", orig_photo_file_id=""):
+        """پیام فورواردشده‌ی پشتیبانی را به مشتری وصل می‌کند تا جواب ادمین
+        برگردد؛ متن/عکس اصلی هم ذخیره می‌شود تا جواب با زمینه‌اش به
+        مشتری برسد ( بداند جواب، جوابِ کدام پیام یا عکس است)."""
         self.state["support_threads"][str(admin_message_id)] = {
             "admin_message_id": int(admin_message_id),
             "customer_chat_id": int(customer_chat_id),
+            "orig_text": (orig_text or "")[:500],
+            "orig_photo_file_id": orig_photo_file_id or "",
             "created_at": _now_iso()}
         self.dirty = True
 
     def support_customer_for(self, admin_message_id):
         row = self.state["support_threads"].get(str(admin_message_id))
         return int(row["customer_chat_id"]) if row else None
+
+    def support_thread_for(self, admin_message_id):
+        """ردیف کامل نخ پشتیبانی (مشتری + متن/عکس اصلی) یا None."""
+        return self.state["support_threads"].get(str(admin_message_id))
 
     # ---------- آمار ----------
     def stats(self):
