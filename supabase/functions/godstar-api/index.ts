@@ -8,10 +8,13 @@
 // می‌خواند، initData را با توکن ربات اعتبارسنجی می‌کند، پی‌لود را
 // پردازش می‌کند و ردیف را حذف می‌کند.
 //
-// دو اکشن (POST با JSON ‏{action, initData, payload?}‏):
+// سه اکشن (POST با JSON ‏{action, initData, payload?}‏):
 //   submit  — پی‌لود را در webapp_inbox می‌گذارد؛ {ok:true}
 //   my-data — سفارش‌های واقعی همان کاربر + موجودی کیف پولش؛
 //             {ok:true, wallet_balance, orders:[...]}
+//   check-code — کد تخفیف را همان لحظه بررسی می‌کند (وجود، فعال بودن،
+//             ظرفیت مصرف و یک‌بارمصرف بودن برای همین کاربر)؛
+//             {ok:true, valid, percent?, reason?}
 // هر دو اکشن اول initData را دقیقاً مثل مستندات تلگرام اعتبارسنجی
 // می‌کنند (data_check_string + HMAC-SHA256 با کلید مخفیِ HMAC-SHA256
 // توکن با کلید ثابت «WebAppData» — نه SHA256 ساده‌ی توکن) و auth_date
@@ -150,7 +153,7 @@ Deno.serve(async (req: Request) => {
   if (body.action === "my-data") {
     const { data: orders, error: ordersError } = await supabase
       .from("orders")
-      .select("order_no,type,service,amount,status,created_at,details")
+      .select("order_no,type,service,amount,status,created_at,details,discount_kind,discount_percent,discount_amount,paid_by_wallet,tx_hash,receipt_file_id")
       .eq("user_id", userId)
       .order("created_at", { ascending: false })
       .limit(50);
@@ -167,6 +170,41 @@ Deno.serve(async (req: Request) => {
       wallet_balance: userRow ? Number(userRow.wallet_balance) : 0,
       orders: orders || [],
     });
+  }
+
+  if (body.action === "check-code") {
+    /* بررسی فوری کد تخفیف برای دکمه‌ی «ثبت» در صفحه‌ی پرداخت —
+       همان قانون‌هایی که ربات هنگام ثبت اعمال می‌کند
+       (_discount_context در bot.py): کد هست و فعال است، ظرفیت
+       مصرفش تمام نشده، و همین کاربر قبلاً از آن استفاده نکرده است.
+       ربات هنگام ثبت دوباره بررسی می‌کند؛ اینجا فقط برای نمایش
+       فوری مبلغ تخفیف است. */
+    const code = String(body.code || "").trim().toUpperCase();
+    if (!/^[A-Z0-9]{3,12}$/.test(code)) {
+      return jsonResponse({ ok: true, valid: false, reason: "invalid" });
+    }
+    const { data: row } = await supabase
+      .from("discount_codes")
+      .select("code,percent,max_uses,uses,active")
+      .eq("code", code)
+      .maybeSingle();
+    if (!row || !row.active) {
+      return jsonResponse({ ok: true, valid: false, reason: "invalid" });
+    }
+    if (row.max_uses && Number(row.uses || 0) >= Number(row.max_uses)) {
+      return jsonResponse({ ok: true, valid: false, reason: "used_up" });
+    }
+    const { data: used } = await supabase
+      .from("orders")
+      .select("order_no")
+      .eq("user_id", userId)
+      .eq("discount_kind", "code")
+      .eq("details->>discount_code", code)
+      .limit(1);
+    if (used && used.length > 0) {
+      return jsonResponse({ ok: true, valid: false, reason: "already_used" });
+    }
+    return jsonResponse({ ok: true, valid: true, percent: Number(row.percent) });
   }
 
   return jsonResponse({ ok: false, error: "unknown_action" }, 400);
