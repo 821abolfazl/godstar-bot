@@ -520,10 +520,14 @@ class BotOrderTest(unittest.TestCase):
             godstar.handle_web_app_data(self.store, msg)
         finally:
             godstar.send_photo_bytes = orig
-        self.assertEqual(len(calls), 1)
+        self.assertEqual(len(calls), 2)
         self.assertEqual(calls[0][0], "278899906")
         self.assertEqual(calls[0][1], raw)
         self.assertIn("سلام، خطا می‌گیرم", calls[0][2])
+        # (v1.0.5) تاییدیه هم خود عکس را در چت مشتری نشان می‌دهد
+        self.assertEqual(calls[1][0], 111)
+        self.assertEqual(calls[1][1], raw)
+        self.assertIn("عکسی که به پشتیبانی فرستادی", calls[1][2])
         # چون عکس واقعاً رسید، تاییدیه نباید بگوید عکس را در چت بفرست
         user_texts = [t for cid, t, _ in self.sent if cid == 111]
         self.assertFalse(any("عکست را همین‌جا" in t for t in user_texts))
@@ -1713,6 +1717,173 @@ class PayFromWalletTest(unittest.TestCase):
 
     def test_wallet_pay_submits_without_receipt(self):
         self.assertIn("receipt_kind: walletPay ? null", self.js)
+
+
+class ReceiptPhotoAndSupportContextTest(unittest.TestCase):
+    """v1.0.5: عکس رسید از مینی‌اپ با بایت واقعی به ادمین می‌رسد؛ جواب
+    پشتیبانی با زمینه‌ی پیام اصلی (متن/عکس) به مشتری می‌رسد؛ سفارش
+    دوباره از راه پی‌لود وب‌اپ هم سفارش تازه می‌سازد."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.store = Store(state_file=os.path.join(self.tmp.name, "state.json"))
+        self.store.load()
+        godstar.ensure_defaults(self.store)
+        self.sent = []
+        self.api_calls = []
+        self.photo_calls = []
+        self._orig_send = godstar.send_message
+        self._orig_api = godstar.api
+        self._orig_photo = godstar.send_photo_bytes
+        self._orig_admin = godstar.ADMIN_CHAT_ID
+        godstar.send_message = lambda chat_id, text, reply_markup=None: self.sent.append(
+            (chat_id, text, reply_markup)) or {"message_id": 1}
+        godstar.api = lambda method, **data: self.api_calls.append(
+            (method, data)) or {"message_id": 99}
+        godstar.send_photo_bytes = lambda chat_id, photo_bytes, caption=None, reply_markup=None: self.photo_calls.append(
+            (chat_id, photo_bytes, caption)) or {"message_id": 55,
+                                                 "photo": [{"file_id": "SMALL"},
+                                                           {"file_id": "BIGFILE"}]}
+        godstar.ADMIN_CHAT_ID = "278899906"
+
+    def tearDown(self):
+        godstar.send_message = self._orig_send
+        godstar.api = self._orig_api
+        godstar.send_photo_bytes = self._orig_photo
+        godstar.ADMIN_CHAT_ID = self._orig_admin
+        self.tmp.cleanup()
+
+    def _webapp_msg(self, chat_id, payload):
+        import json as _json
+        return {"chat": {"id": chat_id}, "from": {"id": chat_id, "username": "u"},
+                "web_app_data": {"data": _json.dumps(payload, ensure_ascii=False)}}
+
+    def _data_url(self, raw):
+        import base64 as _b64
+        return "data:image/jpeg;base64," + _b64.b64encode(raw).decode()
+
+    def test_receipt_photo_data_uploaded_to_admin(self):
+        # عکس رسید کوچک‌شده با بایت واقعی به ادمین می‌رسد و file_id آن
+        # روی سفارش می‌نشیند؛ تاییدیه از مشتری عکس در چت نمی‌خواهد و
+        # اعلان ادمین عکس را دوباره نمی‌فرستد.
+        raw = b"\xff\xd8\xff\xe0fake-receipt-jpeg"
+        msg = self._webapp_msg(111, {"type": "order", "service": "members",
+                                     "details": {"count": 5000, "channel_id": "@GodNews24"},
+                                     "receipt_kind": "photo",
+                                     "receipt_file_name": "r.jpg",
+                                     "receipt_photo_data": self._data_url(raw)})
+        godstar.handle_web_app_data(self.store, msg)
+        order = self.store.get_order("GS-1001")
+        self.assertIsNotNone(order)
+        self.assertEqual(order["receipt_file_id"], "BIGFILE")
+        self.assertEqual(len(self.photo_calls), 1)
+        self.assertEqual(self.photo_calls[0][0], "278899906")
+        self.assertEqual(self.photo_calls[0][1], raw)
+        self.assertIn("GS-1001", self.photo_calls[0][2])
+        self.assertFalse(any(m == "sendPhoto" for m, _ in self.api_calls))
+        user_texts = [t for cid, t, _ in self.sent if cid == 111]
+        self.assertFalse(any("عکس فیش را همین‌جا" in t for t in user_texts))
+
+    def test_receipt_photo_data_invalid_falls_back(self):
+        # receipt_photo_data خراب → رفتار قبلی: تاییدیه عکس را در چت
+        # می‌خواهد؛ چیزی خراب نمی‌شود.
+        msg = self._webapp_msg(111, {"type": "order", "service": "members",
+                                     "details": {"count": 5000, "channel_id": "@GodNews24"},
+                                     "receipt_kind": "photo",
+                                     "receipt_file_name": "r.jpg",
+                                     "receipt_photo_data": "not-a-data-url!!!"})
+        godstar.handle_web_app_data(self.store, msg)
+        self.assertIsNotNone(self.store.get_order("GS-1001"))
+        self.assertEqual(self.photo_calls, [])
+        user_texts = [t for cid, t, _ in self.sent if cid == 111]
+        self.assertTrue(any("عکس فیش را همین‌جا" in t for t in user_texts))
+
+    def test_support_reply_with_photo_context(self):
+        # پیام پشتیبانی با عکس → جواب ادمین با همان عکس به مشتری برمی‌گردد
+        # تا بداند جواب، جوابِ کدام عکس است.
+        raw = b"\xff\xd8\xff\xe0fake-support-jpeg"
+        msg = self._webapp_msg(111, {"type": "support_message", "to": "support",
+                                     "text": "این خطا را می‌گیرم",
+                                     "has_photo": True,
+                                     "photo_file_name": "err.jpg",
+                                     "photo_data": self._data_url(raw)})
+        godstar.handle_web_app_data(self.store, msg)
+        thread = self.store.support_thread_for(55)
+        self.assertIsNotNone(thread)
+        self.assertEqual(thread["orig_photo_file_id"], "BIGFILE")
+        query = {"data": "support_reply:111", "id": "q1",
+                 "message": {"chat": {"id": 278899906}, "message_id": 55}}
+        godstar.handle_callback(self.store, query)
+        prompt = self.store.state.get("pending_prompt", {}).get("278899906")
+        self.assertEqual(prompt["cmd"], "/support_reply 111 55")
+        admin_msg = {"chat": {"id": 278899906}, "from": {"id": 278899906},
+                     "text": "ممنون، بررسی می‌کنیم"}
+        godstar.handle_message(self.store, admin_msg)
+        photos = [d for m, d in self.api_calls if m == "sendPhoto" and d.get("chat_id") == 111]
+        self.assertEqual(len(photos), 1)
+        self.assertEqual(photos[0]["photo"], "BIGFILE")
+        self.assertIn("ممنون، بررسی می‌کنیم", photos[0]["caption"])
+        self.assertIn("در جواب عکسی که فرستادی", photos[0]["caption"])
+
+    def test_support_reply_with_text_context(self):
+        # پیام متنی → جواب با نقل‌قول متن اصلی می‌رسد.
+        godstar._forward_support_to_admin(self.store, 111, text="سلام، خطا می‌گیرم")
+        query = {"data": "support_reply:111", "id": "q1",
+                 "message": {"chat": {"id": 278899906}, "message_id": 1}}
+        godstar.handle_callback(self.store, query)
+        admin_msg = {"chat": {"id": 278899906}, "from": {"id": 278899906},
+                     "text": "درستش می‌کنیم"}
+        godstar.handle_message(self.store, admin_msg)
+        to_customer = [s for s in self.sent if s[0] == 111]
+        self.assertEqual(len(to_customer), 1)
+        self.assertIn("«سلام، خطا می‌گیرم»", to_customer[0][1])
+        self.assertIn("درستش می‌کنیم", to_customer[0][1])
+
+    def test_support_reply_without_context(self):
+        # بدون نخ (مثلاً بعد از ری‌استارت) جواب همان متن ساده است.
+        godstar.handle_admin_command(self.store, 278899906,
+                                     "/support_reply 111 ممنون، بررسی می‌کنیم")
+        to_customer = [s for s in self.sent if s[0] == 111]
+        self.assertEqual(len(to_customer), 1)
+        self.assertEqual(to_customer[0][1], "ممنون، بررسی می‌کنیم")
+
+    def test_support_confirmation_echoes_photo(self):
+        # تایید پیام پشتیبانی، خود عکس فرستاده‌شده را در چت مشتری نشان
+        # می‌دهد تا بداند چه عکسی فرستاده است.
+        raw = b"\xff\xd8\xff\xe0fake-support-jpeg"
+        msg = self._webapp_msg(111, {"type": "support_message", "to": "support",
+                                     "text": "این خطا",
+                                     "has_photo": True,
+                                     "photo_file_name": "err.jpg",
+                                     "photo_data": self._data_url(raw)})
+        godstar.handle_web_app_data(self.store, msg)
+        # یک بار به ادمین، یک بار برگشت به خود مشتری در تاییدیه
+        self.assertEqual(len(self.photo_calls), 2)
+        self.assertEqual(self.photo_calls[1][0], 111)
+        self.assertEqual(self.photo_calls[1][1], raw)
+        self.assertIn("عکسی که به پشتیبانی فرستادی", self.photo_calls[1][2])
+
+    def test_largest_photo_file_id(self):
+        self.assertEqual(godstar._largest_photo_file_id(None), "")
+        self.assertEqual(godstar._largest_photo_file_id({}), "")
+        res = {"photo": [{"file_id": "A"}, {"file_id": "B"}]}
+        self.assertEqual(godstar._largest_photo_file_id(res), "B")
+
+    def test_reorder_via_webapp_payload_creates_order(self):
+        # سفارش دوباره از راه پی‌لود وب‌اپ (همان مسیر دکمه‌ی «دوباره»
+        # در مینی‌اپ) سفارش تازه می‌سازد.
+        msg = self._webapp_msg(111, {"type": "order", "service": "members",
+                                     "details": {"count": 8000, "channel_id": "@GodNews24"},
+                                     "tx_hash": "abc123"})
+        godstar.handle_web_app_data(self.store, msg)
+        godstar.reject_order(self.store, "GS-1001", "تست")
+        msg2 = self._webapp_msg(111, {"type": "reorder", "order_no": "GS-1001"})
+        godstar.handle_web_app_data(self.store, msg2)
+        new = self.store.get_order("GS-1002")
+        self.assertIsNotNone(new)
+        self.assertEqual(new["service"], "members")
+        self.assertEqual(new["status"], "pending")
+        self.assertTrue(any("سفارش دوباره ثبت شد" in t for _, t, _ in self.sent))
 
 
 class GetUpdatesTest(unittest.TestCase):
