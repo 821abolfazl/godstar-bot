@@ -36,7 +36,7 @@ from pricing import (WALLET_ADDRESS, ads_price, member_price, bot_price,
                      compute_order_price, loyalty_eligible,
                      is_valid_channel_id, is_valid_referral_code)
 
-BOT_VERSION = "2026-11-26-1.0.4"   # فقط توی لاگ و برای ادمین در /start نوشته می‌شه
+BOT_VERSION = "2026-11-26-1.0.5"   # فقط توی لاگ و برای ادمین در /start نوشته می‌شه
 BOT_USERNAME = "GodStarShopBot"  # ربات اصلی؛ هرگز GodStarServiceBot (بازنشسته) نیست
 WEBAPP_URL = os.environ.get("WEBAPP_URL") or "https://821abolfazl.github.io/godstar-bot/"
 
@@ -618,14 +618,16 @@ def place_order(store, user_id, service, details, discount_code=None,
     return order
 
 
-def notify_admin_new_order(store, order):
-    """اعلان فوری سفارش جدید به ادمین + دکمه‌های تایید/رد + رسید."""
+def notify_admin_new_order(store, order, receipt_sent=False):
+    """اعلان فوری سفارش جدید به ادمین + دکمه‌های تایید/رد + رسید.
+    receipt_sent یعنی عکس رسید همین حالا جدا فرستاده شده و نباید
+    دوباره فرستاده شود."""
     if not ADMIN_CHAT_ID:
         return
     user = store.get_user(order["user_id"])
     text = "🆕 سفارش جدید\n\n" + order_summary_text(order, user)
     send_message(ADMIN_CHAT_ID, text, reply_markup=order_admin_keyboard(order["order_no"]))
-    if order.get("receipt_file_id"):
+    if order.get("receipt_file_id") and not receipt_sent:
         api("sendPhoto", chat_id=ADMIN_CHAT_ID,
             photo=order["receipt_file_id"],
             caption=f"🧾 رسید سفارش {order['order_no']}")
@@ -908,15 +910,16 @@ def process_webapp_payload(store, chat_id, payload):
                 tx_hash=payload.get("tx_hash") or payload.get("receipt_hash") or "",
                 receipt_file_id=payload.get("receipt_file_id") or "",
                 receipt_kind=receipt_kind)
+            receipt_sent = _attach_receipt_photo_from_webapp(store, order, payload)
             confirm_text = ("سفارش شما ثبت شد ✅\n\n"
                             f"شماره سفارش: {order['order_no']}\n"
                             f"مبلغ: {order['amount']} USDT\n"
                             "در انتظار تایید\n\n" + ORDERS_NOTICE)
-            if receipt_kind == "photo" and not order.get("paid_by_wallet"):
+            if receipt_kind == "photo" and not order.get("paid_by_wallet") and not receipt_sent:
                 confirm_text += ("\n\n📷 لطفاً عکس فیش را همین‌جا در گفتگو "
                                  "با ربات بفرست تا سفارشت تایید شود.")
             send_message(chat_id, confirm_text)
-            notify_admin_new_order(store, order)
+            notify_admin_new_order(store, order, receipt_sent=receipt_sent)
         elif ptype == "wallet_charge":
             receipt_kind = payload.get("receipt_kind") or ""
             order = place_order(
@@ -926,16 +929,17 @@ def process_webapp_payload(store, chat_id, payload):
                 tx_hash=payload.get("tx_hash") or payload.get("receipt_hash") or "",
                 receipt_file_id=payload.get("receipt_file_id") or "",
                 receipt_kind=receipt_kind)
+            receipt_sent = _attach_receipt_photo_from_webapp(store, order, payload)
             confirm_text = ("سفارش شما ثبت شد ✅\n\n"
                             f"شماره سفارش: {order['order_no']}\n"
                             f"مبلغ شارژ: {order['amount']} USDT\n"
                             "در انتظار تایید\n\n"
                             "بعد از تایید، مبلغ به کیف پولت اضافه می‌شود.")
-            if receipt_kind == "photo":
+            if receipt_kind == "photo" and not receipt_sent:
                 confirm_text += ("\n\n📷 لطفاً عکس فیش را همین‌جا در گفتگو "
                                  "با ربات بفرست تا شارژ تایید شود.")
             send_message(chat_id, confirm_text)
-            notify_admin_new_order(store, order)
+            notify_admin_new_order(store, order, receipt_sent=receipt_sent)
         elif ptype == "support_message":
             text = (payload.get("text") or "").strip()
             photo = payload.get("photo_file_id") or ""
@@ -948,12 +952,27 @@ def process_webapp_payload(store, chat_id, payload):
             _forward_support_to_admin(store, chat_id, text=text, photo_file_id=photo,
                                       photo_bytes=photo_bytes,
                                       label="💬 پشتیبانی (از فروشگاه)")
-            confirm = "پیامت به پشتیبانی رسید؛ به‌زودی جواب می‌دهیم. 🙏"
-            if payload.get("has_photo") and not photo and not photo_bytes:
-                # عکس در وب‌اپ فقط انتخاب شده؛ خودش را در چت می‌خواهد تا
-                # ادمین آن را ببیند — در تایید پیام هم گفته می‌شود.
-                confirm += "\n📷 عکست را همین‌جا در گفتگو با ربات بفرست تا به پشتیبانی برسد."
-            send_message(chat_id, confirm)
+            # تایید پیام را با همان چیزی که مشتری فرستاده نشان می‌دهیم
+            # تا در گفتگو ببیند چه عکسی/متنی به پشتیبانی رفته است.
+            if photo_bytes or photo:
+                cap = "📷 عکسی که به پشتیبانی فرستادی"
+                if text:
+                    cap += f"\n{text}"
+                cap += "\n\nپیامت به پشتیبانی رسید؛ به‌زودی جواب می‌دهیم. 🙏"
+                if photo_bytes:
+                    send_photo_bytes(chat_id, photo_bytes, caption=cap)
+                else:
+                    api("sendPhoto", chat_id=chat_id, photo=photo, caption=cap)
+            else:
+                confirm = "پیامت به پشتیبانی رسید؛ به‌زودی جواب می‌دهیم. 🙏"
+                if text:
+                    short = text if len(text) <= 200 else text[:200] + "…"
+                    confirm += f"\n\n«{short}»"
+                if payload.get("has_photo"):
+                    # عکس در وب‌اپ فقط انتخاب شده؛ خودش را در چت می‌خواهد تا
+                    # ادمین آن را ببیند — در تایید پیام هم گفته می‌شود.
+                    confirm += "\n📷 عکست را همین‌جا در گفتگو با ربات بفرست تا به پشتیبانی برسد."
+                send_message(chat_id, confirm)
         elif ptype == "referral_share":
             code = store.get_or_create_referral_code(chat_id)
             send_message(chat_id,
@@ -963,7 +982,9 @@ def process_webapp_payload(store, chat_id, payload):
         elif ptype == "my_orders":
             send_my_orders(store, chat_id)
         elif ptype == "reorder":
-            reorder_order(store, chat_id, payload.get("order_no"))
+            new_order = reorder_order(store, chat_id, payload.get("order_no"))
+            print(f"سفارش دوباره: {payload.get('order_no')} → "
+                  f"{new_order['order_no']} ({new_order['amount']} USDT)")
         elif ptype == "my_wallet":
             balance = store.wallet_balance(chat_id)
             send_message(chat_id,
@@ -972,6 +993,7 @@ def process_webapp_payload(store, chat_id, payload):
         else:
             send_message(chat_id, "دستور دریافتی از فروشگاه شناخته نشد.")
     except ValueError as ex:
+        print("خطا در پی‌لود وب‌اپ:", repr(ex))
         send_message(chat_id, f"⚠️ {ex}")
     store.save_if_dirty()
 
@@ -1046,6 +1068,35 @@ def process_webapp_inbox(store):
     store.save_if_dirty()
 
 
+def _largest_photo_file_id(res):
+    """file_id بزرگ‌ترین اندازه‌ی عکسِ برگشته از sendPhoto؛ اگر نبود ''."""
+    try:
+        photos = (res or {}).get("photo") or []
+        if photos:
+            return photos[-1].get("file_id") or ""
+    except Exception:
+        pass
+    return ""
+
+
+def _attach_receipt_photo_from_webapp(store, order, payload):
+    """عکس رسیدی که از مینی‌اپ کوچک‌شده می‌رسد (receipt_photo_data) را
+    به ادمین می‌فرستد و file_id آن را روی سفارش می‌گذارد تا بعداً هم
+    در دسترس باشد؛ خروجی True یعنی عکس رسید و دیگر لازم نیست مشتری
+    آن را در چت بفرستد."""
+    photo_bytes = _decode_photo_data(payload.get("receipt_photo_data"))
+    if not photo_bytes or not ADMIN_CHAT_ID:
+        return False
+    res = send_photo_bytes(ADMIN_CHAT_ID, photo_bytes,
+                           caption=f"🧾 رسید سفارش {order['order_no']}")
+    fid = _largest_photo_file_id(res)
+    if not fid:
+        return False
+    store.set_order_receipt(order["order_no"], receipt_file_id=fid)
+    order["receipt_file_id"] = fid
+    return True
+
+
 def _decode_photo_data(photo_data):
     """data URL عکس (data:image/jpeg;base64,...) را به بایت تبدیل
     می‌کند؛ در هر خطایی None (رفتار قبلی: فقط نام عکس). سقف ۵ مگابایت."""
@@ -1072,10 +1123,12 @@ def _forward_support_to_admin(store, chat_id, text="", photo_file_id="", photo_b
     name = user.get("first_name") or user.get("username") or str(chat_id)
     caption = f"{label}\nاز: {name} ({chat_id})"
     kb = support_reply_keyboard(chat_id)
+    sent_photo_file_id = photo_file_id or ""
     if photo_bytes:
         res = send_photo_bytes(ADMIN_CHAT_ID, photo_bytes,
                                caption=caption + (f"\n{text}" if text else ""),
                                reply_markup=json.dumps(kb, ensure_ascii=False))
+        sent_photo_file_id = _largest_photo_file_id(res) or sent_photo_file_id
     elif photo_file_id:
         res = api("sendPhoto", chat_id=ADMIN_CHAT_ID, photo=photo_file_id,
                   caption=caption + (f"\n{text}" if text else ""),
@@ -1083,8 +1136,60 @@ def _forward_support_to_admin(store, chat_id, text="", photo_file_id="", photo_b
     else:
         res = send_message(ADMIN_CHAT_ID, caption + f"\n\n{text}", reply_markup=kb)
     if res and res.get("message_id"):
-        store.map_support_message(res["message_id"], chat_id)
+        # متن/عکس اصلی را هم ذخیره می‌کنیم تا جواب ادمین با زمینه‌اش
+        # به مشتری برسد (بداند جواب، جوابِ کدام پیام یا عکس است).
+        store.map_support_message(res["message_id"], chat_id,
+                                  orig_text=text,
+                                  orig_photo_file_id=sent_photo_file_id)
     return res
+
+
+def _support_reply_text(reply_text, thread):
+    """جواب ادمین به مشتری، با زمینه‌ی پیام اصلی (متن/عکس)؛ اگر زمینه‌ای
+    نباشد همان متن جواب برمی‌گردد. خروجی: (text, photo_file_id)."""
+    if not thread:
+        return reply_text, ""
+    orig_text = (thread.get("orig_text") or "").strip()
+    orig_photo = thread.get("orig_photo_file_id") or ""
+    if orig_photo:
+        return (f"💬 جواب پشتیبانی:\n{reply_text}\n\n"
+                "📷 در جواب عکسی که فرستادی"), orig_photo
+    if orig_text:
+        short = orig_text if len(orig_text) <= 200 else orig_text[:200] + "…"
+        return (f"💬 جواب پشتیبانی به پیام شما:\n«{short}»\n\n{reply_text}"), ""
+    return reply_text, ""
+
+
+def _send_support_reply(store, admin_message_id, customer_id, reply_text,
+                        reply_photo_file_id=None, reply_caption=None):
+    """جواب ادمین را با زمینه‌ی پیام اصلی به مشتری می‌رساند؛ اگر جواب
+    خودش عکس باشد، همان عکس با کپشن فرستاده می‌شود و زمینه در کپشن
+    می‌آید؛ اگر پیام اصلی عکس بوده، همان عکس با جواب برگردانده می‌شود."""
+    thread = (store.support_thread_for(admin_message_id)
+              if admin_message_id else None)
+    shop = shop_button_markup()
+    if reply_photo_file_id:
+        caption = reply_caption or reply_text or ""
+        if thread and (thread.get("orig_text") or "").strip():
+            short = thread["orig_text"].strip()
+            short = short if len(short) <= 200 else short[:200] + "…"
+            caption = (caption + f"\n\n💬 در جواب پیام شما: «{short}»").strip()
+        elif thread and thread.get("orig_photo_file_id"):
+            caption = (caption + "\n\n📷 در جواب عکسی که فرستادی").strip()
+        kw = {"chat_id": customer_id, "photo": reply_photo_file_id,
+              "caption": caption}
+        if shop:
+            kw["reply_markup"] = json.dumps(shop, ensure_ascii=False)
+        api("sendPhoto", **kw)
+        return
+    text, orig_photo = _support_reply_text(reply_text, thread)
+    if orig_photo:
+        kw = {"chat_id": customer_id, "photo": orig_photo, "caption": text}
+        if shop:
+            kw["reply_markup"] = json.dumps(shop, ensure_ascii=False)
+        api("sendPhoto", **kw)
+    else:
+        send_message(customer_id, text, reply_markup=shop)
 
 
 # ---------- دستورهای ادمین ----------
@@ -1174,14 +1279,25 @@ def handle_admin_command(store, chat_id, text):
             send_message(chat_id, f"⚠️ {ex}")
     elif cmd == "/support_reply" and len(parts) >= 3:
         # جواب تایپ‌شده‌ی ادمین به پیام پشتیبانی (از راه دکمه‌ی «✏️ پاسخ»):
-        # "/support_reply <chat_id> <متن جواب>"
+        # "/support_reply <chat_id> <متن جواب>" یا با آیدی پیام ادمین:
+        # "/support_reply <chat_id> <admin_msg_id> <متن جواب>" — آیدی
+        # پیام، زمینه‌ی پیام اصلی (متن/عکس) را برای جواب پیدا می‌کند.
         try:
             customer_id = int(parts[1])
         except ValueError:
             send_message(chat_id, "⚠️ آیدی مشتری نامعتبر است.")
             return
-        reply_text = text.split(None, 2)[2].strip()
-        send_message(customer_id, reply_text, reply_markup=shop_button_markup())
+        if parts[2].isdigit():
+            admin_msg_id = int(parts[2])
+            split4 = text.split(None, 3)
+            reply_text = split4[3].strip() if len(split4) > 3 else ""
+        else:
+            admin_msg_id = None
+            reply_text = text.split(None, 2)[2].strip()
+        if not reply_text:
+            send_message(chat_id, "⚠️ متن جواب خالی است.")
+            return
+        _send_support_reply(store, admin_msg_id, customer_id, reply_text)
         send_message(chat_id, "✅ جواب به مشتری فرستاده شد.")
     elif cmd == "/codes":
         codes = store.list_codes()
@@ -1273,24 +1389,20 @@ def handle_message(store, msg):
         return
 
     # جواب ادمین به پیام فورواردشده‌ی پشتیبانی → برگرداندن به مشتری
+    # با زمینه‌ی پیام اصلی (متن/عکس) تا بداند جواب، جوابِ چیست.
     if is_admin(chat_id) and msg.get("reply_to_message"):
         replied_id = msg["reply_to_message"].get("message_id")
         customer_id = store.support_customer_for(replied_id) if replied_id else None
         if customer_id:
-            # جواب ادمین به مشتری می‌رسد (پیام تلگرام)؛ دکمه‌ی فروشگاه هم
-            # همراهش است تا مشتری بتواند به مینی‌اپ برگردد. دیدن جواب
-            # «داخل» مینی‌اپ بدون سرور ممکن نیست؛ اعلان تلگرام راه آن است.
-            shop = shop_button_markup()
             if msg.get("photo"):
                 file_id = msg["photo"][-1]["file_id"]
-                photo_kw = {"chat_id": customer_id, "photo": file_id,
-                            "caption": msg.get("caption") or ""}
-                if shop:
-                    photo_kw["reply_markup"] = json.dumps(shop, ensure_ascii=False)
-                api("sendPhoto", **photo_kw)
+                _send_support_reply(store, replied_id, customer_id,
+                                    msg.get("caption") or "",
+                                    reply_photo_file_id=file_id,
+                                    reply_caption=msg.get("caption") or "")
             else:
-                send_message(customer_id, msg.get("text") or "",
-                             reply_markup=shop)
+                _send_support_reply(store, replied_id, customer_id,
+                                    msg.get("text") or "")
             send_message(chat_id, "✅ جواب به مشتری فرستاده شد.")
             store.save_if_dirty()
             return
@@ -1543,8 +1655,14 @@ def handle_callback(store, query):
         if not customer_id.isdigit():
             answer_callback(query_id, "مشتری نامعتبر است.")
             return
+        # آیدی پیام فورواردشده‌ی ادمین را هم در دستور می‌گذاریم تا
+        # جواب با زمینه‌ی پیام اصلی (متن/عکس) به مشتری برسد.
+        cmd = f"/support_reply {customer_id}"
+        admin_msg_id = (query.get("message") or {}).get("message_id")
+        if admin_msg_id:
+            cmd += f" {admin_msg_id}"
         store.state.setdefault("pending_prompt", {})[str(chat_id)] = {
-            "cmd": f"/support_reply {customer_id}", "at": time.time()}
+            "cmd": cmd, "at": time.time()}
         store.dirty = True
         send_message(chat_id,
                      "جوابت به مشتری را تایپ کن.\nبرای لغو «لغو» را بفرست.")
