@@ -455,6 +455,18 @@ class BotOrderTest(unittest.TestCase):
         # پیام به ادمین می‌رسد و یادداشت «عکس هم دارد» را دارد
         self.assertTrue(any("عکس هم دارد" in t for _, t, _ in self.sent))
 
+    def test_webapp_support_photo_asks_user_to_send_photo_in_chat(self):
+        # رگرسیون (v1.0.3): وقتی عکس فقط در وب‌اپ انتخاب شده، تاییدیه‌ی
+        # کاربر باید بگوید عکس را در گفتگو با ربات بفرستد تا ادمین ببیند.
+        msg = self._webapp_msg(111, {"type": "support_message",
+                                     "to": "support",
+                                     "text": "سلام، خطا می‌گیرم",
+                                     "has_photo": True,
+                                     "photo_file_name": "err.png"})
+        godstar.handle_web_app_data(self.store, msg)
+        user_texts = [t for cid, t, _ in self.sent if cid == 111]
+        self.assertTrue(any("عکست را همین‌جا" in t for t in user_texts))
+
     def test_loyalty_discount_auto(self):
         user = self.store.ensure_user(111)
         user["completed_orders"] = 3
@@ -1443,12 +1455,49 @@ class SwipeTabsTest(unittest.TestCase):
         self.assertIn("function bindSwipe(", self.js)
         self.assertIn("touchstart", self.js)
         self.assertIn("touchend", self.js)
-        # باز کردن پنل سفارش‌ها داده‌ی واقعی را تازه می‌کند
-        self.assertIn('PANELS[currentPanel] === "orders" && !DEMO) loadMyData()',
-                      self.js)
+        # باز کردن پنل سفارش‌ها داده‌ی واقعی را تازه می‌کند و تازه‌سازی
+        # خودکار (v1.0.3) را روشن می‌کند؛ بیرون آمدن از پنل آن را قطع می‌کند
+        self.assertIn('if (PANELS[currentPanel] === "orders") {', self.js)
+        self.assertIn("if (!DEMO) loadMyData();", self.js)
+        self.assertIn("startOrdersPolling(15000, 0);", self.js)
+        self.assertIn("stopOrdersPolling();", self.js)
         # تب‌ها هنوز با data-nav مشخص می‌شوند
         self.assertIn('data-nav="orders"', self.html)
         self.assertIn('data-nav="support"', self.html)
+
+
+class LiveOrdersAndSupportPhotoTest(unittest.TestCase):
+    """سفارش‌های زنده (v1.0.3) + پیش‌نمایش عکس پشتیبانی: سفارش تازه همان
+    لحظه در «سفارش‌های من» دیده می‌شود و تغییر وضعیت هم با تازه‌سازی
+    خودکار همان‌جا می‌نشیند؛ عکس انتخاب‌شده در پشتیبانی پیش‌نمایش دارد
+    و عکس فرستاده‌شده در چت، خود عکس است نه جای خالی کوه."""
+
+    def setUp(self):
+        self.js = open("webapp/app.js", encoding="utf-8").read()
+        self.html = open("webapp/index.html", encoding="utf-8").read()
+        self.css = open("webapp/style.css", encoding="utf-8").read()
+
+    def test_pending_order_shows_instantly(self):
+        self.assertIn("function addPendingOrder(", self.js)
+        self.assertIn("function renderOrdersMerged(", self.js)
+        self.assertIn("function pendingMatchesReal(", self.js)
+        self.assertIn("در حال ثبت…", self.js)
+        # بعد از ثبت سفارش و شارژ کیف پول، تازه‌سازی تند شروع می‌شود
+        self.assertEqual(self.js.count("startOrdersPolling(5000, 60000);"), 3)
+        self.assertIn("function startOrdersPolling(", self.js)
+        self.assertIn("function stopOrdersPolling(", self.js)
+
+    def test_support_photo_preview_and_real_photo_in_chat(self):
+        self.assertIn('id="support-photo-preview"', self.html)
+        self.assertIn('id="support-photo-remove"', self.html)
+        self.assertIn("support-photo-pick", self.html)
+        self.assertIn("URL.createObjectURL(f)", self.js)
+        self.assertIn("عکس انتخاب شد: ", self.js)
+        # عکس فرستاده‌شده با آدرس محلی‌اش در پیام چت می‌ماند
+        self.assertIn("photoUrl: sentPhotoUrl", self.js)
+        self.assertIn("if (m.photoUrl) {", self.js)
+        self.assertIn(".bubble.photo img", self.css)
+        self.assertIn("#support-photo-pick", self.css)
 
 
 class SupportReplyTest(unittest.TestCase):
