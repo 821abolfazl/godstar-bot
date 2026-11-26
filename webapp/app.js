@@ -195,6 +195,7 @@ var chatMessages = [
 
 var pendingOrder = null;   /* set by a service screen, consumed by payment */
 var supportPhoto = null;   /* File picked in the support chat (metadata only) */
+var supportPhotoUrl = null; /* local preview URL of the picked photo (never uploaded) */
 var supportTarget = "support"; /* "support" | "admin" — set by «ارتباط با مدیریت» */
 
 /* ---------------- navigation ---------------- */
@@ -226,8 +227,15 @@ function setPanel(i, animate) {
     t.classList.toggle("active", j === currentPanel);
   });
   if (changed) window.scrollTo(0, 0);
-  /* باز کردن پنل سفارش‌ها، داده‌ی واقعی را تازه می‌کند. */
-  if (PANELS[currentPanel] === "orders" && !DEMO) loadMyData();
+  /* باز کردن پنل سفارش‌ها، داده‌ی واقعی را تازه می‌کند و تا وقتی روی
+     این پنل هستیم هر ۱۵ ثانیه تازه می‌شود تا تغییر وضعیت هم همان‌جا
+     دیده شود؛ بیرون آمدن از پنل، تازه‌سازی خودکار را قطع می‌کند. */
+  if (PANELS[currentPanel] === "orders") {
+    if (!DEMO) loadMyData();
+    startOrdersPolling(15000, 0);
+  } else {
+    stopOrdersPolling();
+  }
 }
 
 function bindSwipe() {
@@ -764,6 +772,16 @@ function bindPayment() {
     $("pay-submit").disabled = true;
     submitPayload(payload).then(function (ok) {
       if (!ok) { submitFailed("pay"); renderPayment(); return; }
+      /* سفارش همان لحظه در «سفارش‌های من» دیده شود؛ تا ۶۰ ثانیه هر
+         ۵ ثانیه چک می‌کنیم تا نسخه‌ی واقعی ربات جای آن بنشیند. */
+      addPendingOrder({
+        service: pendingOrder.service,
+        title: pendingOrder.title,
+        sub: pendingOrder.sub,
+        amount: payPayable(),
+        meta: faTether(payPayable())
+      });
+      startOrdersPolling(5000, 60000);
       showSuccess("سفارش شما ثبت شد", null, note);
     });
   });
@@ -824,6 +842,14 @@ function bindWallet() {
     $("wallet-submit").disabled = true;
     submitPayload(payload).then(function (ok) {
       if (!ok) { submitFailed("wallet"); renderWallet(); return; }
+      addPendingOrder({
+        service: "wallet_charge",
+        title: SERVICE_TITLES.wallet_charge,
+        sub: "",
+        amount: walletState.amount,
+        meta: faTether(walletState.amount)
+      });
+      startOrdersPolling(5000, 60000);
       showSuccess("شارژ کیف پول ثبت شد", null, note);
     });
   });
@@ -889,6 +915,14 @@ function renderOrders(list) {
         haptic("light");
         submitPayload({ type: "reorder", order_no: o.order_no }).then(function (ok) {
           if (!ok) { submitFailed(); return; }
+          addPendingOrder({
+            service: o.service,
+            title: o.title,
+            sub: o.sub,
+            amount: null,
+            meta: o.meta || ""
+          });
+          startOrdersPolling(5000, 60000);
           showSuccess("سفارش دوباره ثبت شد", null, "شماره‌ی سفارش تازه در پیام ربات اعلام می‌شود؛ نتیجه‌ی بررسی را با پیام بهت خبر می‌دهیم.");
         });
       });
@@ -943,18 +977,91 @@ function mapRealOrders(real) {
     };
   });
 }
-function loadMyData() {
+/* ---------------- سفارش‌های زنده: سفارش تازه همان لحظه در «سفارش‌های من» -----
+   سفارش از وب‌اپ که ثبت می‌شود، ربات آن را تا ~۱۰ ثانیه بعد از جدول
+   webapp_inbox می‌خواند و می‌سازد؛ پس «سفارش‌های من» اگر فقط موقع باز
+   شدن پنل خوانده شود، سفارش تازه را نشان نمی‌دهد. برای همین:
+   ۱) همان لحظه‌ی ثبت موفق، یک ورودی موقت با وضعیت «در حال ثبت…» به
+      لیست اضافه می‌شود؛ ۲) بعد از ثبت، هر ۵ ثانیه (تا ۶۰ ثانیه) و تا
+      وقتی روی پنل سفارش‌ها هستیم هر ۱۵ ثانیه، داده‌ی واقعی تازه
+      می‌شود؛ ۳) به‌محض اینکه نسخه‌ی واقعی سفارش از سرور رسید، جای
+      ورودی موقت را می‌گیرد (هم‌خوانی با سرویس + مبلغ + بازه‌ی زمانی).
+   ورودی موقت بعد از ۲ دقیقه اگر واقعی نشد، خودش حذف می‌شود. */
+var realOrders = [];      /* آخرین ردیف‌های واقعی سرور (my-data) */
+var pendingOrders = [];   /* سفارش‌های تازه‌ثبت‌شده که ربات هنوز نساخته */
+var ordersTimer = null;   /* تایمر تازه‌سازی خودکار پنل سفارش‌ها */
+
+function prunePendingOrders(now) {
+  var t = now || Date.now();
+  pendingOrders = pendingOrders.filter(function (p) { return t - p.createdAt < 120000; });
+}
+function pendingMatchesReal(p, real) {
+  /* سفارش واقعی‌ای که بعد از ثبت موقت ساخته شده و همان سرویس/مبلغ را دارد. */
+  return real.some(function (o) {
+    if (o.service !== p.service) return false;
+    if (p.amount != null && o.amount != null && Number(o.amount) !== Number(p.amount)) return false;
+    try {
+      var created = new Date(o.created_at).getTime();
+      return created >= p.createdAt - 5000 && created <= p.createdAt + 180000;
+    } catch (e) { return false; }
+  });
+}
+function renderOrdersMerged() {
+  prunePendingOrders();
+  var live = pendingOrders.filter(function (p) { return !pendingMatchesReal(p, realOrders); });
+  var list = (DEMO ? orders : mapRealOrders(realOrders)).concat(live);
+  renderOrders(list);
+}
+function addPendingOrder(display) {
+  pendingOrders.push({
+    service: display.service,
+    title: display.title,
+    sub: display.sub || "",
+    status: "pending",
+    statusLabel: "در حال ثبت…",
+    statusClass: "amber",
+    meta: display.meta || "",
+    amount: display.amount != null ? display.amount : null,
+    order_no: null,
+    canReorder: false,
+    pendingLocal: true,
+    createdAt: Date.now()
+  });
+  renderOrdersMerged();
+}
+function stopOrdersPolling() {
+  if (ordersTimer) { clearInterval(ordersTimer); ordersTimer = null; }
+}
+function startOrdersPolling(intervalMs, durationMs) {
+  stopOrdersPolling();
+  if (DEMO) return;
+  var started = Date.now();
+  ordersTimer = setInterval(function () {
+    loadMyData(true);
+    if (durationMs && Date.now() - started >= durationMs) {
+      stopOrdersPolling();
+      /* اگر هنوز روی پنل سفارش‌ها هستیم، با فاصله‌ی آرام‌تر ادامه بده. */
+      if (PANELS[currentPanel] === "orders") startOrdersPolling(15000, 0);
+    }
+  }, intervalMs);
+}
+
+function loadMyData(quiet) {
   /* سفارش‌های واقعی و موجودی کیف پول را از Edge Function می‌گیرد و
      صفحه‌ی «سفارش‌های من» و برچسب‌های کیف پول را تازه می‌کند. در حالت
-     نمونه، همان داده‌ی نمونه‌ی محلی نشان داده می‌شود. */
-  if (DEMO) { renderOrders(orders); refreshWalletLabels(); return; }
-  var box = $("orders-list");
-  if (box) {
-    box.innerHTML = "";
-    var loading = document.createElement("p");
-    loading.className = "friends-empty";
-    loading.textContent = "در حال بارگذاری…";
-    box.appendChild(loading);
+     نمونه، همان داده‌ی نمونه‌ی محلی نشان داده می‌شود. با quiet=true
+     (تازه‌سازی خودکار) لیست پاک و «در حال بارگذاری…» نشان داده نمی‌شود
+     تا صفحه چشمک نزند. */
+  if (DEMO) { renderOrdersMerged(); refreshWalletLabels(); return; }
+  if (!quiet) {
+    var box = $("orders-list");
+    if (box) {
+      box.innerHTML = "";
+      var loading = document.createElement("p");
+      loading.className = "friends-empty";
+      loading.textContent = "در حال بارگذاری…";
+      box.appendChild(loading);
+    }
   }
   fetch(FUNCTION_URL, {
     method: "POST",
@@ -970,10 +1077,11 @@ function loadMyData() {
       walletKnown = true;
       refreshWalletLabels();
     }
-    renderOrders(mapRealOrders(data.orders || []));
+    realOrders = data.orders || [];
+    renderOrdersMerged();
   }).catch(function (err) {
     console.log("[GodStar] my-data failed:", err);
-    renderOrders([]); /* حالت خالی فعلی + دکمه‌ی «مشاهده سفارش‌ها در ربات» */
+    renderOrdersMerged(); /* موقت‌ها اگر باشند می‌مانند؛ وگرنه حالت خالی */
   });
 }
 
@@ -1003,8 +1111,17 @@ function renderChat() {
     var b = document.createElement("div");
     b.className = "bubble " + (m.mine ? "mine" : "theirs") + (m.photo ? " photo" : "");
     if (m.photo) {
-      b.innerHTML = mountainSVG("m" + i) + '<span class="cap"></span>';
-      b.querySelector(".cap").textContent = m.caption || "";
+      if (m.photoUrl) {
+        /* عکس واقعیِ خود کاربر (آدرس محلی)؛ اگر نبود، جای خالی کوه. */
+        var img = document.createElement("img");
+        img.src = m.photoUrl; img.alt = "عکس";
+        b.appendChild(img);
+      } else {
+        b.innerHTML = mountainSVG("m" + i);
+      }
+      var cap = document.createElement("span");
+      cap.className = "cap"; cap.textContent = m.caption || "";
+      b.appendChild(cap);
     } else {
       b.textContent = m.text;
     }
@@ -1041,9 +1158,29 @@ function bindSupport() {
   });
   $("support-photo").addEventListener("change", function () {
     var f = $("support-photo").files && $("support-photo").files[0];
+    if (supportPhotoUrl) { try { URL.revokeObjectURL(supportPhotoUrl); } catch (e) {} supportPhotoUrl = null; }
     supportPhoto = f || null;
-    $("support-photo-note").textContent = f ?
-      ("عکس انتخاب شد: " + f.name + " — بعد از ارسال پیام، عکس را در گفتگو با ربات بفرست.") : "";
+    var pick = $("support-photo-pick"), preview = $("support-photo-preview");
+    if (f) {
+      /* عکس انتخاب‌شده همان لحظه با پیش‌نمایش نشان داده می‌شود تا کاربر
+         مطمئن شود چه عکسی را می‌فرستد؛ عکس فقط به‌صورت محلی دیده
+         می‌شود و از وب‌اپ آپلود نمی‌شود. */
+      supportPhotoUrl = URL.createObjectURL(f);
+      if (preview) preview.src = supportPhotoUrl;
+      if (pick) pick.classList.remove("hidden");
+      $("support-photo-note").textContent = "عکس انتخاب شد: " + f.name;
+    } else {
+      if (pick) pick.classList.add("hidden");
+      $("support-photo-note").textContent = "";
+    }
+  });
+  $("support-photo-remove").addEventListener("click", function () {
+    haptic("light");
+    if (supportPhotoUrl) { try { URL.revokeObjectURL(supportPhotoUrl); } catch (e) {} supportPhotoUrl = null; }
+    supportPhoto = null;
+    $("support-photo").value = "";
+    $("support-photo-pick").classList.add("hidden");
+    $("support-photo-note").textContent = "";
   });
   function sendSupport() {
     var text = $("support-input").value.trim();
@@ -1058,6 +1195,7 @@ function bindSupport() {
       photo_file_name: photo ? photo.name : null,
       photo_file_size: photo ? photo.size : null
     };
+    var sentPhotoUrl = photo ? supportPhotoUrl : null;
     $("btn-send-support").disabled = true;
     submitPayload(payload).then(function (ok) {
       $("btn-send-support").disabled = false;
@@ -1065,13 +1203,18 @@ function bindSupport() {
       chatMessages.push({
         mine: true,
         photo: !!photo,
+        photoUrl: sentPhotoUrl,
         caption: photo ? (text || "عکس") : undefined,
         text: photo ? undefined : text,
         time: nowTimeFa()
       });
       $("support-input").value = "";
       supportPhoto = null;
+      /* آدرس عکس فرستاده‌شده در پیام چت می‌ماند (باطل نمی‌شود) تا عکس
+         در همان گفتگو دیده شود؛ انتخاب تازه، آدرس قبلی را باطل نمی‌کند. */
+      supportPhotoUrl = null;
       $("support-photo").value = "";
+      $("support-photo-pick").classList.add("hidden");
       $("support-photo-note").textContent = "";
       supportTarget = "support";
       $("support-input").placeholder = "پیامت را بنویس...";
