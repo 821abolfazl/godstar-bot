@@ -65,7 +65,6 @@
  * wallet_charge: {type:"wallet_charge", amount_usdt,
  *                receipt_kind, receipt_hash, receipt_file_name,
  *                receipt_file_size, receipt_photo_data}
- * reorder:     {type:"reorder", order_no}
  * support_message: {type:"support_message", to:"support"|"admin",
  *                text, has_photo, photo_file_name, photo_file_size,
  *                photo_data (downscaled data URL or null)}
@@ -259,8 +258,7 @@ function setPanel(i, animate) {
      فقط وقتی پنل واقعاً عوض شده تازه می‌شود — زدن روی صفحه (که
      touchend سوایپ آن را setPanel با همان پنل صدا می‌زند) نباید
      لیست را از نو بسازد، وگرنه دکمه‌ای که کاربر زده زیر انگشتش
-     نابود می‌شود و ضربه‌اش گم می‌شود (دکمه‌ی «دوباره» در ۱٫۰٫۵
-     همین‌طور بی‌اثر مانده بود). */
+     نابود می‌شود و ضربه‌اش گم می‌شود. */
   if (changed && PANELS[currentPanel] === "orders") {
     if (!DEMO) loadMyData();
     startOrdersPolling(15000, 0);
@@ -298,7 +296,7 @@ function bindSwipe() {
     track.classList.remove("no-anim");
     /* ضربه‌ی ساده (بدون کشیدن) پنل را عوض نمی‌کند و نباید setPanel
        صدا بزند — فقط انیمیشن را برمی‌گردانیم تا ضربه به دکمه‌های
-       داخل پنل (مثل «دوباره») سالم برسد. */
+       داخل پنل (مثل «تمدید») سالم برسد. */
     if (!dragging) { return; }
     var dx = e.changedTouches[0].clientX - startX;
     var w = el.clientWidth;
@@ -626,6 +624,22 @@ function renderBot() {
   $("bot-order").disabled = !ok;
   $("bot-note").classList.toggle("hidden", ok);
 }
+function submitOrderDirect(payload, note) {
+  /* ثبت مستقیم سفارش بدون صفحه‌ی پرداخت — ربات اختصاصی قیمت توافقی
+     دارد (مبلغ صفر) و رسید نمی‌خواهد؛ فقط درخواست ثبت می‌شود. */
+  submitPayload(payload).then(function (ok) {
+    if (!ok) { submitFailed(); return; }
+    addPendingOrder({
+      service: payload.service,
+      title: payload.title,
+      sub: payload.sub,
+      amount: payload.amount_usdt,
+      meta: payload.amount_usdt > 0 ? faTether(payload.amount_usdt) : "توافقی"
+    });
+    startOrdersPolling(5000, 60000);
+    showSuccess("درخواست شما ثبت شد", null, note);
+  });
+}
 function bindBot() {
   $all("#bot-type input").forEach(function (r) {
     r.addEventListener("change", function () {
@@ -641,17 +655,30 @@ function bindBot() {
   $("bot-order").addEventListener("click", function () {
     haptic("medium");
     if (botState.type === "custom") {
-      openPayment({
+      /* ربات اختصاصی: بدون صفحه‌ی پرداخت — فقط درخواست ثبت می‌شود؛
+         قیمت بعد از بررسی اعلام می‌شود. */
+      var channel = $("bot-channel").value.trim();
+      submitOrderDirect({
+        type: "order",
         service: "bot",
         title: "ربات تلگرام",
-        sub: "ربات اختصاصی — " + $("bot-channel").value.trim(),
-        amount: 0,
+        sub: "ربات اختصاصی — " + channel,
+        channel_id: channel,
+        amount_usdt: 0,
+        discount_code: null,
+        discount_usdt: 0,
+        payable_usdt: 0,
+        paid_by_wallet: false,
+        receipt_kind: null,
+        receipt_hash: null,
+        receipt_file_name: null,
+        receipt_file_size: null,
+        receipt_photo_data: null,
         bot_type: "custom",
         plan_months: null,
         plan_price_usdt: null,
-        channel_id: $("bot-channel").value.trim(),
-        notes: $("bot-notes").value.trim()
-      });
+        notes: $("bot-notes").value.trim() || null
+      }, "درخواست ربات اختصاصی ثبت شد؛ بعد از بررسی، قیمت و نحوه‌ی پرداخت را خبر می‌دهیم.");
     } else {
       openPayment({
         service: "bot",
@@ -898,7 +925,7 @@ function bindPayment() {
         discount_code: payState.discountCode || null,
         discount_usdt: payState.discount,
         payable_usdt: payPayable(),
-        pay_from_wallet: walletPay,
+        paid_by_wallet: walletPay,
         receipt_kind: walletPay ? null : payState.receiptKind,
         receipt_hash: (!walletPay && payState.receiptKind === "hash") ? $("pay-hash").value.trim() : null,
         receipt_file_name: (!walletPay && payState.receiptKind === "photo" && payState.receiptFile.file)
@@ -1065,7 +1092,7 @@ function renderOrders(list) {
     var row = document.createElement("div");
     row.className = "order-row";
     /* زدن روی ردیف، جزئیات همان سفارش را نشان می‌دهد؛ دکمه‌های
-       داخل ردیف (تمدید/دوباره) ضربه را نگه می‌دارند. */
+       داخل ردیف (تمدید) ضربه را نگه می‌دارند. */
     row.addEventListener("click", function () { haptic("light"); showOrderDetail(o); });
     var icon = document.createElement("span");
     icon.innerHTML = SERVICE_ICONS[o.service] || SERVICE_ICONS.ads;
@@ -1087,34 +1114,6 @@ function renderOrders(list) {
         haptic("light"); showScreen("bot");
       });
       main.appendChild(r);
-    }
-    if (o.order_no && o.canReorder) {
-      var rb = document.createElement("button");
-      rb.type = "button"; rb.className = "renew-link"; rb.textContent = "🔁 دوباره";
-      rb.addEventListener("click", function (e) {
-        if (e) e.stopPropagation(); /* ضربه به دکمه، ردیف را باز نکند */
-        haptic("light");
-        /* بازخورد فوری: دکمه همان لحظه‌ی ضربه غیرفعال و «در حال ثبت…»
-           می‌شود تا کاربر ببیند ضربه‌اش رسیده؛ پیش از این ضربه بی‌صدا
-           می‌ماند و معلوم نبود رسیده یا نه. */
-        rb.disabled = true;
-        rb.textContent = "در حال ثبت…";
-        submitPayload({ type: "reorder", order_no: o.order_no }).then(function (ok) {
-          rb.disabled = false;
-          rb.textContent = "🔁 دوباره";
-          if (!ok) { submitFailed(); return; }
-          addPendingOrder({
-            service: o.service,
-            title: o.title,
-            sub: o.sub,
-            amount: null,
-            meta: o.meta || ""
-          });
-          startOrdersPolling(5000, 60000);
-          showSuccess("سفارش دوباره ثبت شد", null, "شماره‌ی سفارش تازه در پیام ربات اعلام می‌شود؛ نتیجه‌ی بررسی را با پیام بهت خبر می‌دهیم.");
-        });
-      });
-      main.appendChild(rb);
     }
     var side = document.createElement("div");
     side.className = "order-side";
@@ -1167,8 +1166,6 @@ function mapRealOrders(real) {
       statusClass: ORDER_STATUS_CLASSES[o.status] || "amber",
       meta: o.order_no + " — " + faTether(o.amount) + (dateStr ? " — " + dateStr : ""),
       order_no: o.order_no,
-      canReorder: o.type === "order" &&
-        (o.service === "ads" || o.service === "members" || o.service === "bot"),
       raw: o
     };
   });
@@ -1277,7 +1274,6 @@ function addPendingOrder(display) {
     meta: display.meta || "",
     amount: display.amount != null ? display.amount : null,
     order_no: null,
-    canReorder: false,
     pendingLocal: true,
     createdAt: Date.now()
   });
