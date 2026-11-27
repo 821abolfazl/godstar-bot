@@ -24,6 +24,9 @@ import requests
 
 STATE_FILE = os.environ.get("GODSTAR_STATE_FILE") or "godstar_state.json"
 
+# فاصله‌ی تلاش دوباره‌ی ذخیره در سوپابیس بعد از یک بار ناموفق (ثانیه).
+SAVE_RETRY_BACKOFF_SEC = 60
+
 
 def _now_iso():
     """زمان فعلی به‌صورت ISO 8601 (UTC)؛ سوپابیس برای timestamptz
@@ -93,6 +96,11 @@ class Store:
             else (os.environ.get("SUPABASE_PUBLISHABLE_KEY") or ""))
         self.state = _empty_state()
         self.dirty = False
+        # خطاهای آخرین تلاش ذخیره در سوپابیس: {table: error}؛ خالی یعنی
+        # آخرین ذخیره موفق بود. تا وقتی خطایی هست، dirty می‌ماند تا
+        # تغییر گم نشود و تلاش بعدی دوباره امتحان کند.
+        self.last_save_errors = {}
+        self._save_backoff_until = 0.0
 
     # ---------- سوپابیس ----------
     def supabase_enabled(self):
@@ -252,9 +260,14 @@ class Store:
 
     def save(self):
         """ذخیره می‌کند: همیشه فایل JSON محلی (پشتیبان)، و اگر سوپابیس
-        تنظیم شده باشد، upsert همه‌ی ردیف‌ها در جدول‌های رابطه‌ای."""
+        تنظیم شده باشد، upsert همه‌ی ردیف‌ها در جدول‌های رابطه‌ای.
+        خروجی خطاهای سوپابیس است ({table: error}؛ خالی یعنی موفق).
+        اگر حتی یک جدول نجات پیدا نکند، dirty می‌ماند تا تغییر گم نشود
+        و تلاش بعدی دوباره امتحان کند (پیش از این dirty همیشه پاک
+        می‌شد و تغییرِ ذخیره‌نشده با ری‌استارت ربات از دست می‌رفت)."""
         with open(self.state_file, "w", encoding="utf-8") as f:
             json.dump(self.state, f, ensure_ascii=False)
+        errors = {}
         if self.supabase_enabled():
             for table, key in _TABLES.items():
                 val = self.state[key]
@@ -267,11 +280,24 @@ class Store:
                     # خطای یک جدول نباید جدول‌های بعدی را نجات‌ندهَد.
                     print(f"supabase save failed ({table}):", ex,
                           "— local file kept")
-        self.dirty = False
+                    errors[table] = str(ex)
+        self.last_save_errors = errors
+        if not errors:
+            self.dirty = False
+        return errors
 
     def save_if_dirty(self):
-        if self.dirty:
-            self.save()
+        """فقط وقتی تغییر هست ذخیره می‌کند؛ بعد از یک ذخیره‌ی ناموفق،
+        تلاش دوباره حداکثر هر ۶۰ ثانیه یک بار انجام می‌شود تا در
+        خرابی سوپابیس، حلقه هر ۲ ثانیه سرور را نکوبد."""
+        if not self.dirty:
+            return {}
+        now = time.time()
+        if self._save_backoff_until and now < self._save_backoff_until:
+            return dict(self.last_save_errors)
+        errors = self.save()
+        self._save_backoff_until = (now + SAVE_RETRY_BACKOFF_SEC) if errors else 0.0
+        return errors
 
     # ---------- کاربران ----------
     def ensure_user(self, chat_id, username=None, first_name=None):
