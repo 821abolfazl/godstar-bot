@@ -1961,7 +1961,8 @@ class AdMediaAndReorderLogTest(unittest.TestCase):
         self.assertEqual(self.photo_calls[0][0], "278899906")
         self.assertEqual(self.photo_calls[0][1], raw)
         self.assertIn("GS-1001", self.photo_calls[0][2])
-        self.assertEqual(order["details"].get("ad_media_file_id"), "BIGFILE")
+        self.assertTrue(order["details"].get("ad_media_sent"))
+        self.assertNotIn("ad_media_file_id", order["details"])
         self.assertTrue(any("رسانه‌ی تبلیغ: عکس ارسال شد" in t
                             for t in self._admin_texts()))
 
@@ -1974,7 +1975,8 @@ class AdMediaAndReorderLogTest(unittest.TestCase):
         self.assertEqual(self.video_calls[0][0], "278899906")
         self.assertEqual(self.video_calls[0][1], raw)
         self.assertIn("GS-1001", self.video_calls[0][2])
-        self.assertEqual(order["details"].get("ad_media_file_id"), "VIDFILE")
+        self.assertTrue(order["details"].get("ad_media_sent"))
+        self.assertNotIn("ad_media_file_id", order["details"])
         self.assertTrue(any("رسانه‌ی تبلیغ: ویدیو ارسال شد" in t
                             for t in self._admin_texts()))
 
