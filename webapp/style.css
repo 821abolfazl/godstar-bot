@@ -165,6 +165,13 @@ input::placeholder, textarea::placeholder { color: #A6A9BB; }
 }
 .chip-status.green { background: var(--green-tint); color: var(--green); }
 .chip-status.amber { background: var(--gold-tint); color: var(--amber); }
+
+/* مرحله‌ی انجام سفارش در «سفارش‌های من» (v1.0.8) */
+.order-progress { display: block; color: var(--muted); font-size: 13px; margin-top: 2px; }
+.progress-steps { display: flex; gap: 6px; margin: 10px 0 4px; flex-wrap: wrap; }
+.progress-step { font-size: 12px; padding: 4px 8px; border-radius: 999px; background: #f0f0f0; color: #777; }
+.progress-step.done { background: var(--green-tint); color: var(--green); }
+.progress-step.current { background: var(--gold-tint); color: var(--amber); font-weight: 700; }
 .referral-rule { color: var(--muted); font-size: 13px; margin-top: 10px; }
 .friends-empty { color: var(--muted); padding: 4px 0; }
 
