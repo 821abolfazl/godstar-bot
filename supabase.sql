@@ -107,6 +107,15 @@ create table if not exists order_reminders (
 alter table public.orders
   add column if not exists confirmed_at timestamptz;
 
+-- شمارنده‌ی دفعات استفاده از تخفیف وفاداری (نسخه‌ی ۱٫۰٫۱۲):
+-- نبود این ستون در جدول زنده، ذخیره‌ی همه‌ی کاربرها را با خطای
+-- PGRST204 می‌انداخت و موجودی کیف پول در مینی‌اپ هیچ‌وقت تازه
+-- نمی‌شد. «create table if not exists» ستون اضافه نمی‌کند؛ پس
+-- هر فیلد تازه حتماً با ALTER TABLE اینجا اضافه شود و در SQL Editor
+-- سوپابیس هم اجرا شود.
+alter table public.users
+  add column if not exists loyalty_uses integer not null default 0;
+
 -- پاسخ‌های خودکار پیش‌فرض
 insert into auto_replies (question, answer) values
   ('سفارشم کی آماده می‌شه؟',
