@@ -1101,6 +1101,12 @@ function renderOrders(list) {
     var t = document.createElement("b"); t.textContent = o.title;
     var s = document.createElement("small"); s.textContent = o.sub;
     main.appendChild(t); main.appendChild(s);
+    if (o.progress) {
+      var p = document.createElement("small");
+      p.className = "order-progress";
+      p.textContent = "📍 مرحله: " + PROGRESS_LABELS[o.progress];
+      main.appendChild(p);
+    }
     if (o.daysLeft) {
       var d = document.createElement("small");
       d.className = "days-left"; d.textContent = o.daysLeft;
@@ -1135,6 +1141,18 @@ var SERVICE_TITLES = { ads: "تبلیغات Ads تلگرام", members: "خری�
 var ORDER_STATUS_LABELS = { pending: "در انتظار تایید", confirmed: "تایید شد", rejected: "رد شد" };
 var ORDER_STATUS_CLASSES = { pending: "amber", confirmed: "green", rejected: "red" };
 
+/* مراحل انجام سفارش (v1.0.8): بعد از تایید، ادمین مرحله را جلو می‌برد
+   و مشتری همین مرحله را در «سفارش‌های من» می‌بیند. مرحله در
+   details.progress می‌آید؛ سفارش تاییدشده‌ی بدون آن، «تایید شده» است. */
+var PROGRESS_LABELS = { confirmed: "تایید شده", in_progress: "در حال انجام", completed: "تکمیل شده" };
+var PROGRESS_STEPS = ["confirmed", "in_progress", "completed"];
+function orderProgress(o) {
+  var d = (o && o.details) || {};
+  if (PROGRESS_STEPS.indexOf(d.progress) >= 0) return d.progress;
+  if (o && o.status === "confirmed") return "confirmed";
+  return null;
+}
+
 function formatDateTime(iso) {
   try {
     var created = new Date(iso);
@@ -1157,13 +1175,15 @@ function mapRealOrders(real) {
       sub += (sub ? " — " : "") + "دلیل رد: " + d.reject_reason;
     }
     var dateStr = formatDateTime(o.created_at);
+    var progress = orderProgress(o);
     return {
       service: o.service,
       title: SERVICE_TITLES[o.service] || o.service,
       sub: sub,
       status: o.status,
-      statusLabel: ORDER_STATUS_LABELS[o.status] || o.status,
-      statusClass: ORDER_STATUS_CLASSES[o.status] || "amber",
+      statusLabel: progress ? PROGRESS_LABELS[progress] : (ORDER_STATUS_LABELS[o.status] || o.status),
+      statusClass: progress === "in_progress" ? "amber" : (ORDER_STATUS_CLASSES[o.status] || "amber"),
+      progress: progress,
       meta: o.order_no + " — " + faTether(o.amount) + (dateStr ? " — " + dateStr : ""),
       order_no: o.order_no,
       raw: o
@@ -1197,6 +1217,21 @@ function showOrderDetail(mapped) {
   card.appendChild(hr);
   if (raw.order_no) addRow("شماره سفارش", raw.order_no);
   addRow("وضعیت", mapped.statusLabel || raw.status || "");
+  var progress = orderProgress(raw);
+  if (progress) {
+    var steps = document.createElement("div");
+    steps.className = "progress-steps";
+    var curIdx = PROGRESS_STEPS.indexOf(progress);
+    PROGRESS_STEPS.forEach(function (st, i) {
+      var span = document.createElement("span");
+      span.className = "progress-step" +
+        (i < curIdx ? " done" : i === curIdx ? " current" : "");
+      span.textContent = (i < curIdx ? "✓ " : i === curIdx ? "◉ " : "○ ") +
+        PROGRESS_LABELS[st];
+      steps.appendChild(span);
+    });
+    card.appendChild(steps);
+  }
   if (raw.status === "rejected" && d.reject_reason) {
     addRow("دلیل رد", d.reject_reason);
   }
