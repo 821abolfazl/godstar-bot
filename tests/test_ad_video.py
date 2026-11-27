@@ -113,6 +113,42 @@ class AdVideoTest(unittest.TestCase):
             self.store.get_order(order["order_no"])["details"].get("ad_media_sent"))
         self.assertTrue(any(c[0] == "sendVideo" for c in self.api_calls))
 
+    def test_video_sent_as_file_is_attached(self):
+        # فیلمی که به‌صورت فایل فرستاده می‌شود (document با mime ویدیویی)
+        # هم باید به سفارش بچسبد، نه اینکه گم شود.
+        order = self._video_ads_order()
+        ok = godstar.attach_ad_video(
+            self.store, 111,
+            {"document": {"file_id": "DOC1", "mime_type": "video/mp4"}})
+        self.assertTrue(ok)
+        self.assertTrue(
+            self.store.get_order(order["order_no"])["details"].get("ad_media_sent"))
+        videos = [c for c in self.api_calls if c[0] == "sendVideo"]
+        self.assertEqual(len(videos), 1)
+        self.assertEqual(videos[0][1]["video"], "DOC1")
+
+    def test_non_video_document_is_ignored(self):
+        self._video_ads_order()
+        ok = godstar.attach_ad_video(
+            self.store, 111,
+            {"document": {"file_id": "DOC2", "mime_type": "application/pdf"}})
+        self.assertFalse(ok)
+        self.assertEqual(self.api_calls, [])
+
+    def test_video_in_support_mode_still_attached(self):
+        # مشتری در حالت پشتیبانی فیلم را می‌فرستد: فیلم نباید در چت
+        # پشتیبانی گم شود؛ اول به سفارش می‌چسبد.
+        order = self._video_ads_order()
+        self.store.set_support_mode(111, True)
+        msg = {"chat": {"id": 111},
+               "from": {"id": 111, "username": "tester_x",
+                        "first_name": "Test"},
+               "video": {"file_id": "VID3"}}
+        godstar.handle_message(self.store, msg)
+        self.assertTrue(
+            self.store.get_order(order["order_no"])["details"].get("ad_media_sent"))
+        self.assertTrue(any(c[0] == "sendVideo" for c in self.api_calls))
+
 
 if __name__ == "__main__":
     unittest.main()
