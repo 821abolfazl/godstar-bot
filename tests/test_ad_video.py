@@ -45,7 +45,7 @@ class AdVideoTest(unittest.TestCase):
 
     def test_video_attached_to_pending_ads_order(self):
         order = self._video_ads_order()
-        ok = godstar.attach_ad_video(
+        ok = godstar.attach_ad_media(
             self.store, 111, {"video": {"file_id": "VID1"}})
         self.assertTrue(ok)
         stored = self.store.get_order(order["order_no"])
@@ -61,7 +61,7 @@ class AdVideoTest(unittest.TestCase):
                             for _, t, _ in self.sent))
 
     def test_video_without_pending_order(self):
-        ok = godstar.attach_ad_video(
+        ok = godstar.attach_ad_media(
             self.store, 111, {"video": {"file_id": "VID1"}})
         self.assertFalse(ok)
         self.assertEqual(self.api_calls, [])
@@ -69,7 +69,7 @@ class AdVideoTest(unittest.TestCase):
     def test_video_ignored_when_media_already_sent(self):
         order = self._video_ads_order()
         order["details"]["ad_media_sent"] = True
-        ok = godstar.attach_ad_video(
+        ok = godstar.attach_ad_media(
             self.store, 111, {"video": {"file_id": "VID1"}})
         self.assertFalse(ok)
         self.assertEqual(self.api_calls, [])
@@ -80,7 +80,7 @@ class AdVideoTest(unittest.TestCase):
             {"views": 100000, "media": "photo", "channel_id": "@GodNews24",
              "ad_text": "t"},
             tx_hash="abc")
-        ok = godstar.attach_ad_video(
+        ok = godstar.attach_ad_media(
             self.store, 111, {"video": {"file_id": "VID1"}})
         self.assertFalse(ok)
 
@@ -88,14 +88,14 @@ class AdVideoTest(unittest.TestCase):
         godstar.place_order(
             self.store, 111, "members",
             {"count": 1000, "channel_id": "@GodNews24"}, tx_hash="abc")
-        ok = godstar.attach_ad_video(
+        ok = godstar.attach_ad_media(
             self.store, 111, {"video": {"file_id": "VID1"}})
         self.assertFalse(ok)
 
     def test_newest_order_gets_video(self):
         old = self._video_ads_order()
         new = self._video_ads_order()
-        godstar.attach_ad_video(
+        godstar.attach_ad_media(
             self.store, 111, {"video": {"file_id": "VID1"}})
         self.assertTrue(
             self.store.get_order(new["order_no"])["details"].get("ad_media_sent"))
@@ -117,7 +117,7 @@ class AdVideoTest(unittest.TestCase):
         # فیلمی که به‌صورت فایل فرستاده می‌شود (document با mime ویدیویی)
         # هم باید به سفارش بچسبد، نه اینکه گم شود.
         order = self._video_ads_order()
-        ok = godstar.attach_ad_video(
+        ok = godstar.attach_ad_media(
             self.store, 111,
             {"document": {"file_id": "DOC1", "mime_type": "video/mp4"}})
         self.assertTrue(ok)
@@ -129,7 +129,7 @@ class AdVideoTest(unittest.TestCase):
 
     def test_non_video_document_is_ignored(self):
         self._video_ads_order()
-        ok = godstar.attach_ad_video(
+        ok = godstar.attach_ad_media(
             self.store, 111,
             {"document": {"file_id": "DOC2", "mime_type": "application/pdf"}})
         self.assertFalse(ok)
