@@ -56,8 +56,9 @@
  *                receipt_photo_data (downscaled data URL or null),
  *                ...service fields: ads->{views, media, ad_text,
  *                target_channels, media_file_name,
- *                ad_media_data (photo: downscaled data URL; video:
- *                base64 data URL up to 4 MB; null otherwise),
+ *                ad_media_data (photo: downscaled data URL;
+ *                video: never embedded — the customer sends the
+ *                video in chat after the order; null otherwise),
  *                ad_media_kind:"photo"|"video"};
  *                members->{quantity};
  *                bot->{bot_type:"management"|"custom", plan_months,
@@ -896,9 +897,10 @@ function bindPayment() {
       (!walletKnown || walletBalance >= payPayable()) && pendingOrder.amount > 0;
     /* عکس رسید (اگر انتخاب شده) اول کوچک می‌شود و با سفارش فرستاده
        می‌شود تا ادمین همان لحظه آن را ببیند (مثل عکس پشتیبانی).
-       عکس/فیلم تبلیغ هم همین‌جا آماده می‌شود: عکس کوچک می‌شود و
-       فیلم تا ۴ مگابایت خوانده می‌شود تا ادمین رسانه‌ی تبلیغ را هم
-       همان لحظه ببیند. */
+       عکس تبلیغ هم کوچک می‌شود؛ ولی فیلم تبلیغ هرگز در پی‌لود
+       گذاشته نمی‌شود: فیلم چند مگابایتی (base64) آپلود سفارش را
+       از مهلت ۲۰ ثانیه‌ای می‌گذراند و «ثبت نشد» می‌داد — مشتری
+       فیلم را پس از ثبت، در گفتگو با ربات می‌فرستد. */
     var receiptFile = (!walletPay && payState.receiptKind === "photo")
       ? payState.receiptFile.file : null;
     $("pay-submit").disabled = true;
@@ -907,8 +909,6 @@ function bindPayment() {
     var mediaPromise;
     if (pendingOrder.service === "ads" && pendingOrder.media === "photo") {
       mediaPromise = downscalePhoto(mediaFile);
-    } else if (pendingOrder.service === "ads" && pendingOrder.media === "video") {
-      mediaPromise = readFileAsDataURL(mediaFile, VIDEO_MAX_BYTES);
     } else {
       mediaPromise = Promise.resolve(null);
     }
@@ -1255,7 +1255,7 @@ function showOrderDetail(mapped) {
   if (d.description) addRow("توضیحات", d.description);
   if (d.media && d.media !== "none") {
     addRow("رسانه‌ی تبلیغ", (d.media === "photo" ? "عکس" : "ویدیو") +
-      (d.ad_media_file_id ? " (ارسال شد)" : " (در چت فرستاده می‌شود)"));
+      (d.ad_media_sent || d.ad_media_file_id ? " (ارسال شد)" : " (در چت فرستاده می‌شود)"));
   }
   if (d.receipt_file_name) addRow("فایل رسید", d.receipt_file_name);
   if (raw.created_at) addRow("تاریخ ثبت", formatDateTime(raw.created_at));
@@ -1452,22 +1452,6 @@ function downscalePhoto(file) {
           img.src = reader.result;
         } catch (e) { resolve(null); }
       };
-      reader.readAsDataURL(file);
-    } catch (e) { resolve(null); }
-  });
-}
-/* فیلم تبلیغ (تا ۴ مگابایت) را همان‌طور که هست به data URL تبدیل
-   می‌کند تا همراه سفارش به ادمین برسد؛ بزرگ‌تر از آن null برمی‌گردد
-   و فقط نام فیلم فرستاده می‌شود (ربات در چت از مشتری می‌خواهد). */
-var VIDEO_MAX_BYTES = 4 * 1024 * 1024;
-function readFileAsDataURL(file, maxBytes) {
-  return new Promise(function (resolve) {
-    try {
-      if (!file || !file.size || file.size > maxBytes) { resolve(null); return; }
-      if (typeof FileReader === "undefined") { resolve(null); return; }
-      var reader = new FileReader();
-      reader.onerror = function () { resolve(null); };
-      reader.onload = function () { resolve(reader.result); };
       reader.readAsDataURL(file);
     } catch (e) { resolve(null); }
   });
