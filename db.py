@@ -281,7 +281,8 @@ class Store:
         if user is None:
             user = {"chat_id": int(chat_id), "username": username or "",
                     "first_name": first_name or "", "wallet_balance": "0",
-                    "completed_orders": 0, "referral_code": "",
+                    "completed_orders": 0, "loyalty_uses": 0,
+                    "referral_code": "",
                     "referred_by": "", "referral_discount_used": False,
                     "referral_credit": False, "created_at": _now_iso()}
             users[key] = user
@@ -466,17 +467,45 @@ class Store:
         self.dirty = True
         return row
 
+    def release_code(self, code):
+        """آزاد کردن یک بار مصرف کد (وقتی سفارشی که با آن ثبت شده رد می‌شود).
+
+        شمارنده‌ی کلی یک واحد کم می‌شود (نه کمتر از صفر)؛ اگر کد حذف
+        شده باشد هیچ کاری نمی‌کند.
+        """
+        row = self.get_code(code)
+        if row is None:
+            return
+        row["uses"] = max(0, int(row.get("uses") or 0) - 1)
+        self.dirty = True
+
+    def has_pending_discount(self, chat_id, kind):
+        """آیا این کاربر سفارش در انتظار یا تاییدشده‌ای با این نوع تخفیف دارد؟
+        (رزرو تخفیف: سفارش ردشده حساب نمی‌شود؛ جلوی دوبار گرفتن
+        یک تخفیف با دو سفارش هم‌زمان را می‌گیرد.)"""
+        for order in self.state["orders"].values():
+            if int(order.get("user_id") or 0) != int(chat_id):
+                continue
+            if order.get("status") == "rejected":
+                continue
+            if order.get("discount_kind") == kind:
+                return True
+        return False
+
     def has_used_code(self, chat_id, code):
         """آیا این کاربر قبلاً از این کد تخفیف استفاده کرده است؟
 
         مصرف هر کاربر از روی سفارش‌هایش خوانده می‌شود: سفارشی که با
-        همان کد ثبت شده باشد. سفارش‌های پیش از نسخه‌ی ۰٫۸ کد را در
-        جزئیاتشان ندارند، پس صاحبشان یک بار دیگر می‌تواند از کد
-        استفاده کند.
+        همان کد ثبت شده باشد. سفارش ردشده کد را نمی‌سوزاند — فقط
+        سفارش در انتظار یا تاییدشده مصرف حساب می‌شود. سفارش‌های پیش
+        از نسخه‌ی ۰٫۸ کد را در جزئیاتشان ندارند، پس صاحبشان یک بار
+        دیگر می‌تواند از کد استفاده کند.
         """
         code = str(code).upper()
         for order in self.state["orders"].values():
             if int(order.get("user_id") or 0) != int(chat_id):
+                continue
+            if order.get("status") == "rejected":
                 continue
             if order.get("discount_kind") != "code":
                 continue
@@ -542,7 +571,7 @@ class Store:
         return "ok", referrer_id
 
     def activate_referral_for_friend(self, friend_id):
-        """وقتی دوست سفارش می‌دهد: ۱۰٪ معرف فعال می‌شود.
+        """وقتی سفارش دوست تایید می‌شود: ۱۰٪ معرف فعال می‌شود.
         خروجی referrer_id یا None (اگر معرفی فعالی برای این دوست نباشد)."""
         for r in self.state["referrals"]:
             if (int(r.get("friend_id") or 0) == int(friend_id)
