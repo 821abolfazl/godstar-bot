@@ -36,7 +36,7 @@ from pricing import (WALLET_ADDRESS, ads_price, member_price, bot_price,
                      compute_order_price, loyalty_eligible,
                      is_valid_channel_id, is_valid_referral_code)
 
-BOT_VERSION = "2026-11-27-1.0.12"   # فقط توی لاگ و برای ادمین در /start نوشته می‌شه
+BOT_VERSION = "2026-11-27-1.0.13"   # فقط توی لاگ و برای ادمین در /start نوشته می‌شه
 BOT_USERNAME = "GodStarShopBot"  # ربات اصلی؛ هرگز GodStarServiceBot (بازنشسته) نیست
 WEBAPP_URL = os.environ.get("WEBAPP_URL") or "https://821abolfazl.github.io/godstar-bot/"
 
@@ -977,6 +977,13 @@ def attach_receipt(store, chat_id, msg):
     photo_file_id = ""
     if msg.get("photo"):
         photo_file_id = msg["photo"][-1]["file_id"]
+    if not photo_file_id:
+        # عکس فیشِ فرستاده‌شده به‌صورت فایل (document با mime عکسی)
+        # هم رسید است؛ پیش از این نادیده گرفته می‌شد و سفارش برای
+        # همیشه در انتظار رسید می‌ماند.
+        doc = msg.get("document") or {}
+        if isinstance(doc.get("mime_type"), str) and doc["mime_type"].startswith("image/"):
+            photo_file_id = doc.get("file_id") or ""
     if not photo_file_id and not _looks_like_tx_hash(text):
         return False
     order = _awaiting_receipt_order(store, chat_id)
@@ -1002,52 +1009,75 @@ def attach_receipt(store, chat_id, msg):
     return True
 
 
-def _awaiting_ad_video_order(store, chat_id):
-    """تازه‌ترین سفارش Ads در انتظار همان مشتری که رسانه‌اش «ویدیو»
-    است و هنوز فیلمش نرسیده (فیلم در چت فرستاده می‌شود)."""
+def _awaiting_ad_media_order(store, chat_id):
+    """تازه‌ترین سفارش Ads در انتظار همان مشتری که رسانه‌اش (عکس یا
+    ویدیو) هنوز نرسیده است (رسانه در چت فرستاده می‌شود)."""
     orders = store.list_orders(status="pending", user_id=chat_id)
     for o in reversed(orders):  # تازه‌ترین اول
         details = o.get("details") or {}
-        if (o.get("service") == "ads" and details.get("media") == "video"
+        if (o.get("service") == "ads" and details.get("media") in ("photo", "video")
                 and not details.get("ad_media_sent")
                 and not details.get("ad_media_file_id")):
             return o
     return None
 
 
-def attach_ad_video(store, chat_id, msg):
-    """فیلم تبلیغی که مشتری در چت می‌فرستد را به سفارش Ads در انتظار
-    می‌چسباند و به ادمین می‌فرستد؛ خروجی True یعنی فیلم رسید.
+def attach_ad_media(store, chat_id, msg):
+    """رسانه‌ی تبلیغ (عکس یا ویدیو) که مشتری در چت می‌فرستد را به
+    سفارش Ads در انتظار می‌چسباند و به ادمین می‌فرستد؛ خروجی True
+    یعنی رسانه رسید.
 
-    فیلم هرگز با خود سفارش فرستاده نمی‌شود (مینی‌اپ آن را در پی‌لود
-    نمی‌گذارد): مشتری پس از ثبت سفارش، فیلم را همین‌جا در گفتگو
-    می‌فرستد. خود فیلم هم هیچ‌جا نگه داشته نمی‌شود؛ فقط یک علامت
-    «رسید ✓» روی سفارش می‌ماند تا دوباره همان فیلم خواسته نشود.
-    فیلمِ فرستاده‌شده به‌صورت فایل (document با mime ویدیویی) هم
-    پذیرفته می‌شود.
+    رسانه هرگز با خود سفارش فرستاده نمی‌شود (مینی‌اپ ویدیو را در
+    پی‌لود نمی‌گذارد و عکسِ بزرگ هم ممکن است نرسد): مشتری پس از ثبت
+    سفارش، رسانه را همین‌جا در گفتگو می‌فرستد. خود رسانه هم هیچ‌جا
+    نگه داشته نمی‌شود؛ فقط یک علامت «رسید ✓» روی سفارش می‌ماند تا
+    دوباره همان رسانه خواسته نشود. رسانه‌ی فرستاده‌شده به‌صورت فایل
+    (document با mime عکس یا ویدیو) هم پذیرفته می‌شود. فقط همان نوع
+    رسانه‌ای که سفارش می‌خواهد پذیرفته می‌شود (عکس برای سفارش عکسی،
+    ویدیو برای سفارش ویدیویی) تا عکس تبلیغ به‌جای رسید یا برعکس
+    چسبانده نشود.
     """
-    video = msg.get("video")
-    if not video:
-        doc = msg.get("document") or {}
-        if isinstance(doc.get("mime_type"), str) and doc["mime_type"].startswith("video/"):
-            video = doc
-    if not video:
-        return False
-    order = _awaiting_ad_video_order(store, chat_id)
+    order = _awaiting_ad_media_order(store, chat_id)
     if order is None:
         return False
-    file_id = video.get("file_id") or ""
+    details = order.get("details") or {}
+    want = details.get("media")
+    file_id = ""
+    is_video = False
+    if want == "video":
+        video = msg.get("video")
+        if not video:
+            doc = msg.get("document") or {}
+            if isinstance(doc.get("mime_type"), str) and doc["mime_type"].startswith("video/"):
+                video = doc
+        if video:
+            file_id = video.get("file_id") or ""
+            is_video = True
+    elif want == "photo":
+        photo = msg.get("photo")
+        if photo:
+            file_id = photo[-1].get("file_id") or ""
+        if not file_id:
+            doc = msg.get("document") or {}
+            if isinstance(doc.get("mime_type"), str) and doc["mime_type"].startswith("image/"):
+                file_id = doc.get("file_id") or ""
+    if not file_id:
+        return False
     order.setdefault("details", {})["ad_media_sent"] = True
     user = store.get_user(chat_id) or {}
     sender = user.get("first_name") or user.get("username") or str(chat_id)
     uname = f" (@{user['username']})" if user.get("username") else ""
+    label = "فیلم" if is_video else "عکس"
     send_message(chat_id,
-                 f"✅ فیلم تبلیغ سفارش {order['order_no']} دریافت شد؛ "
+                 f"✅ {label} تبلیغ سفارش {order['order_no']} دریافت شد؛ "
                  "در انتظار تایید است. 🙏")
     if ADMIN_CHAT_ID:
-        api("sendVideo", chat_id=ADMIN_CHAT_ID, video=file_id,
-            caption=f"🎬 فیلم تبلیغ سفارش {order['order_no']} رسید.\n"
-                    f"از: {sender}{uname} ({chat_id})")
+        caption = (f"🎬 {label} تبلیغ سفارش {order['order_no']} رسید.\n"
+                   f"از: {sender}{uname} ({chat_id})")
+        if is_video:
+            api("sendVideo", chat_id=ADMIN_CHAT_ID, video=file_id, caption=caption)
+        else:
+            api("sendPhoto", chat_id=ADMIN_CHAT_ID, photo=file_id, caption=caption)
     store.save_if_dirty()
     return True
 
@@ -1885,10 +1915,17 @@ def handle_message(store, msg):
             store.save_if_dirty()
             return
 
-    # فیلم تبلیغ (ویدیو یا فایل ویدیویی) برای سفارش Ads در انتظار —
-    # پیش از حالت پشتیبانی بررسی می‌شود تا فیلم مشتری در چت پشتیبانی
-    # گم نشود.
-    if attach_ad_video(store, chat_id, msg):
+    # رسانه‌ی تبلیغ (عکس یا ویدیو) برای سفارش Ads در انتظار — پیش از
+    # حالت پشتیبانی بررسی می‌شود تا رسانه‌ی مشتری در چت پشتیبانی گم نشود.
+    if attach_ad_media(store, chat_id, msg):
+        store.save_if_dirty()
+        return
+
+    # رسید: عکس فیش یا هش تراکنش برای سفارش در انتظار — پیش از حالت
+    # پشتیبانی بررسی می‌شود تا رسید مشتری در چت پشتیبانی گم نشود.
+    # فقط وقتی پیام به سفارشِ در انتظارِ بدون رسید بخورد برمی‌دارد؛
+    # وگرنه پشتیبانی طبق معمول ادامه پیدا می‌کند.
+    if attach_receipt(store, chat_id, msg):
         store.save_if_dirty()
         return
 
@@ -1902,18 +1939,16 @@ def handle_message(store, msg):
         photo_file_id = ""
         if msg.get("photo"):
             photo_file_id = msg["photo"][-1]["file_id"]
+        if not photo_file_id:
+            doc = msg.get("document") or {}
+            if isinstance(doc.get("mime_type"), str) and doc["mime_type"].startswith("image/"):
+                photo_file_id = doc.get("file_id") or ""
         label = (store.state.get("support_label") or {}).get(str(chat_id), "💬 پشتیبانی")
         _forward_support_to_admin(store, chat_id, text=text,
                                   photo_file_id=photo_file_id, label=label)
         if not ADMIN_CHAT_ID:
             return
         send_message(chat_id, "پیامت رسید؛ به‌زودی جواب می‌دهیم. 🙏")
-        store.save_if_dirty()
-        return
-
-    # رسید: عکس فیش یا هش تراکنش برای سفارش در انتظار (از وب‌اپ یا
-    # سفارش دوباره) — قبل از پاسخ متفرقه بررسی می‌شود.
-    if attach_receipt(store, chat_id, msg):
         store.save_if_dirty()
         return
 
@@ -2043,6 +2078,33 @@ def handle_callback(store, query):
     store.save_if_dirty()
 
 
+_SAVE_ALERT_SENT = False
+
+
+def alert_save_errors_once(store):
+    """اگر ذخیره در سوپابیس ناموفق بود، یک بار در هر ران به ادمین خبر
+    می‌دهد تا خرابیِ بی‌صدا (مثل ستون جاافتاده‌ی ۱٫۰٫۱۲) ساعت‌ها
+    دیده‌نشده نماند؛ با درست شدن ذخیره، پرچم برمی‌گردد تا خرابیِ
+    بعدی دوباره خبر داده شود."""
+    global _SAVE_ALERT_SENT
+    errors = dict(getattr(store, "last_save_errors", {}) or {})
+    if errors:
+        if _SAVE_ALERT_SENT:
+            return
+        _SAVE_ALERT_SENT = True
+        if ADMIN_CHAT_ID:
+            lines = "\n".join(f"• {t}: {str(e)[:120]}" for t, e in errors.items())
+            try:
+                send_message(
+                    ADMIN_CHAT_ID,
+                    "⚠️ ذخیره در سوپابیس ناموفق بود؛ تغییرها فعلاً فقط در "
+                    "حافظه‌ی ربات‌اند و هر ۶۰ ثانیه دوباره تلاش می‌شود:\n" + lines)
+            except Exception:
+                pass
+    else:
+        _SAVE_ALERT_SENT = False
+
+
 def run_once(store):
     updates = api_get_updates(store.state.get("tg_offset", 0))
     for u in updates:
@@ -2063,6 +2125,7 @@ def run_once(store):
     except Exception as ex:
         print("خطا در صندوق وب‌اپ:", repr(ex))
     store.save_if_dirty()
+    alert_save_errors_once(store)
 
 
 def main():
