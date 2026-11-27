@@ -563,19 +563,23 @@ class BotOrderTest(unittest.TestCase):
                "text": f"/start {code}"}
         godstar.handle_message(self.store, msg)
         self.assertEqual(self.store.get_user(200)["referred_by"], code)
-        # دوست اولین سفارش را می‌دهد → 10٪ خودش + فعال شدن 10٪ معرف
+        # دوست اولین سفارش را می‌دهد → 10٪ خودش؛ 10٪ معرف هنوز فعال نیست
         order = godstar.place_order(self.store, 200, "members",
                                     {"count": 5000, "channel_id": "@GodNews24"},
                                     tx_hash="abc")
         self.assertEqual(order["amount"], "13.50")
         self.assertEqual(order["discount_kind"], "referral")
-        self.assertTrue(self.store.get_user(100)["referral_credit"])
-        # سفارش دوم دوست دیگر تخفیف معرفی ندارد
+        self.assertFalse(self.store.get_user(100).get("referral_credit"))
+        # سفارش دوم دوست دیگر تخفیف معرفی ندارد (اولی در انتظار رزروش کرده)
         order2 = godstar.place_order(self.store, 200, "members",
                                      {"count": 1000, "channel_id": "@GodNews24"},
                                      tx_hash="abc")
         self.assertEqual(order2["amount"], "3.00")
         self.assertEqual(order2["discount_kind"], "")
+        # با تایید سفارش اول، 10٪ معرف فعال می‌شود
+        godstar.confirm_order(self.store, order["order_no"])
+        self.assertTrue(self.store.get_user(100)["referral_credit"])
+        self.assertTrue(self.store.get_user(200)["referral_discount_used"])
 
     def test_discount_code_once_per_user(self):
         # هر نفر از هر کد تخفیف فقط یک بار می‌تواند استفاده کند
