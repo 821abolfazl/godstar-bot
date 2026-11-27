@@ -36,7 +36,7 @@ from pricing import (WALLET_ADDRESS, ads_price, member_price, bot_price,
                      compute_order_price, loyalty_eligible,
                      is_valid_channel_id, is_valid_referral_code)
 
-BOT_VERSION = "2026-11-27-1.0.10"   # فقط توی لاگ و برای ادمین در /start نوشته می‌شه
+BOT_VERSION = "2026-11-27-1.0.12"   # فقط توی لاگ و برای ادمین در /start نوشته می‌شه
 BOT_USERNAME = "GodStarShopBot"  # ربات اصلی؛ هرگز GodStarServiceBot (بازنشسته) نیست
 WEBAPP_URL = os.environ.get("WEBAPP_URL") or "https://821abolfazl.github.io/godstar-bot/"
 
@@ -51,7 +51,7 @@ POLL_TIMEOUT = 10       # مهلت long-poll در هر درخواست getUpdates
 
 SUPPORT_LINE = "درصورت نیاز به راهنمایی و مشاوره با پشتیبانی در ارتباط باشید"
 ORDERS_NOTICE = "هر تغییری در وضعیت سفارشت، با پیام بهت خبر داده می‌شود."
-LOYALTY_LINE = "بعد از ۳ سفارش، ۱۰٪ تخفیف می‌گیری"
+LOYALTY_LINE = "هر ۳ سفارش، یک بار ۱۰٪ تخفیف می‌گیری"
 REFERRAL_LINE = "وقتی دوستت با کدت سفارش بدهد، هر دو ۱۰٪ تخفیف می‌گیرید."
 REFERRAL_ONCE_LINE = "هر کد دعوت برای هر نفر فقط یک بار قابل استفاده است."
 PAYMENT_NOTE = "پرداخت فقط با تتر (BEP20)"
@@ -296,12 +296,13 @@ def setup_commands():
 
 # ---------- کیبوردها ----------
 def main_keyboard(is_admin=False):
+    # منوی اصلی فقط دکمه‌های متنی است؛ مینی‌اپ فقط از دکمه‌ی آبی
+    # «فروشگاه» پایین صفحه باز می‌شود، نه از این منو.
     keyboard = [
-        [{"text": "🛍 خدمات", "web_app": {"url": WEBAPP_URL}},
+        [{"text": "🛍 خدمات"},
          {"text": "📦 سفارش‌های من"}],
         [{"text": "👛 کیف پول من"}, {"text": "💬 پشتیبانی"}],
         [{"text": "🎁 کد معرفی من"}],
-        [{"text": "🛍 باز کردن فروشگاه", "web_app": {"url": WEBAPP_URL}}],
     ]
     if is_admin:
         keyboard.append([{"text": "📋 دستورهای ادمین"}])
@@ -412,7 +413,7 @@ SERVICES_TEXT = (
     "ربات اختصاصی تو: قیمت توافقی بعد از بررسی.\n"
     "چرا ربات ما؟ مخصوص کانال تو ساخته می‌شود، مدیریت کامل کانال، "
     "پشتیبانی ۲۴ ساعته، تحویل سریع.\n\n"
-    "برای ثبت سفارش، فروشگاه را باز کن 👇\n"
+    "برای ثبت سفارش، دکمه‌ی آبی «فروشگاه» پایین صفحه را بزن.\n"
     f"{PAYMENT_NOTE}."
 )
 
@@ -565,8 +566,11 @@ def _require_receipt(payload):
 def _discount_context(store, user, discount_code):
     """تعیین تخفیف قابل اعمال برای این سفارش (قانون تک‌تخفیف).
     خروجی: (loyalty, referral, code_percent, code_row)"""
-    loyalty = loyalty_eligible(user.get("completed_orders") or 0)
-    referral = bool(user.get("referred_by")) and not user.get("referral_discount_used")
+    loyalty = loyalty_eligible(user.get("completed_orders") or 0,
+                               user.get("loyalty_uses") or 0)
+    referral = (bool(user.get("referred_by"))
+                and not user.get("referral_discount_used")
+                and not store.has_pending_discount(user.get("chat_id"), "referral"))
     code_row = None
     code_percent = None
     if discount_code:
@@ -675,17 +679,6 @@ def place_order(store, user_id, service, details, discount_code=None,
             store.debit_wallet(user_id, float(final), note=f"سفارش {order['order_no']}")
         if kind == "code" and code_row is not None:
             store.use_code(code_row["code"])
-        if user.get("referred_by"):
-            # اولین سفارش دوست: ۱۰٪ معرف فعال می‌شود. تخفیف ۱۰٪ دوست هم
-            # به همین سفارش تعلق داشت (اگر تخفیف دیگری بزرگ‌تر نبود، همان
-            # انتخاب شد)؛ پس با ثبت این سفارش، حق استفاده‌اش تمام می‌شود.
-            user["referral_discount_used"] = True
-            store.dirty = True
-            referrer_id = store.activate_referral_for_friend(user_id)
-            if referrer_id:
-                send_message(referrer_id,
-                             "🎉 دوستت با کد معرفیت سفارش داد!\n"
-                             "۱۰٪ تخفیف معرف برای سفارش بعدیت فعال شد. ✅")
     return order
 
 
@@ -719,6 +712,19 @@ def confirm_order(store, order_no):
         details["progress"] = "confirmed"
         user = store.ensure_user(user_id)
         user["completed_orders"] = int(user.get("completed_orders") or 0) + 1
+        if order.get("discount_kind") == "loyalty":
+            # تخفیف وفاداری یک بار مصرف است: با تایید این سفارش می‌سوزد
+            # و برای فعال شدن دوباره ۳ سفارش تکمیل‌شده‌ی دیگر لازم است.
+            user["loyalty_uses"] = int(user.get("loyalty_uses") or 0) + 1
+        if order.get("discount_kind") == "referral":
+            # تخفیف معرفی فقط با تایید سفارش می‌سوزد؛ با رد شدن نمی‌سوزد.
+            # همان‌جا ۱۰٪ معرفِ معرف هم فعال می‌شود و به او خبر می‌رسد.
+            user["referral_discount_used"] = True
+            referrer_id = store.activate_referral_for_friend(user_id)
+            if referrer_id:
+                send_message(referrer_id,
+                             "🎉 دوستت با کد معرفیت سفارش داد!\n"
+                             "۱۰٪ تخفیف معرف برای سفارش بعدیت فعال شد. ✅")
         store.dirty = True
     order["details"] = details
     store.dirty = True
@@ -815,6 +821,14 @@ def reject_order(store, order_no, reason=None):
     """
     order = store.set_order_status(order_no, "rejected")
     user_id = order["user_id"]
+    code_released = ""
+    if order.get("discount_kind") == "code":
+        # کد تخفیف فقط با تایید سفارش می‌سوزد؛ با رد شدن آزاد می‌شود
+        # تا مشتری دوباره بتواند از آن استفاده کند.
+        code = (order.get("details") or {}).get("discount_code") or ""
+        if code:
+            store.release_code(code)
+            code_released = code
     if reason:
         details = dict(order.get("details") or {})
         details["reject_reason"] = reason
@@ -829,6 +843,8 @@ def reject_order(store, order_no, reason=None):
         text += f"دلیل: {reason}\n"
     text += ("اگر پول از کیف پولت کم شده بود، برگشت داده شد.\n"
              f"{SUPPORT_LINE}")
+    if code_released:
+        text += f"\n\n🎟 کد تخفیف {code_released} آزاد شد؛ می‌توانی دوباره از آن استفاده کنی."
     send_message(user_id, text)
     return order
 
@@ -1007,8 +1023,14 @@ def attach_ad_video(store, chat_id, msg):
     نمی‌گذارد): مشتری پس از ثبت سفارش، فیلم را همین‌جا در گفتگو
     می‌فرستد. خود فیلم هم هیچ‌جا نگه داشته نمی‌شود؛ فقط یک علامت
     «رسید ✓» روی سفارش می‌ماند تا دوباره همان فیلم خواسته نشود.
+    فیلمِ فرستاده‌شده به‌صورت فایل (document با mime ویدیویی) هم
+    پذیرفته می‌شود.
     """
     video = msg.get("video")
+    if not video:
+        doc = msg.get("document") or {}
+        if isinstance(doc.get("mime_type"), str) and doc["mime_type"].startswith("video/"):
+            video = doc
     if not video:
         return False
     order = _awaiting_ad_video_order(store, chat_id)
@@ -1755,7 +1777,8 @@ def handle_message(store, msg):
         send_message(chat_id, SERVICES_TEXT, reply_markup=main_keyboard(is_admin(chat_id)))
         return
     if text == "🛍 باز کردن فروشگاه":
-        send_message(chat_id, "فروشگاه را از دکمه‌ی وب‌اپ باز کن 👆",
+        # برای کیبوردهای قدیمیِ کش‌شده که هنوز این دکمه را دارند.
+        send_message(chat_id, "فروشگاه را از دکمه‌ی آبی «فروشگاه» پایین صفحه باز کن",
                      reply_markup=main_keyboard(is_admin(chat_id)))
         return
     if text == "📦 سفارش‌های من":
@@ -1764,7 +1787,8 @@ def handle_message(store, msg):
     if text == "👛 کیف پول من":
         balance = store.wallet_balance(chat_id)
         completed = int(user.get("completed_orders") or 0)
-        remaining = max(0, pricing.LOYALTY_AFTER_ORDERS - completed)
+        uses = int(user.get("loyalty_uses") or 0)
+        remaining = max(0, pricing.LOYALTY_AFTER_ORDERS * (uses + 1) - completed)
         loyalty_note = ("🎉 تخفیف وفاداری ۱۰٪ برای سفارش بعدیت فعال است!"
                         if remaining == 0 else
                         f"🎁 {LOYALTY_LINE} — {remaining} سفارش دیگر تا فعال شدن.")
@@ -1861,6 +1885,13 @@ def handle_message(store, msg):
             store.save_if_dirty()
             return
 
+    # فیلم تبلیغ (ویدیو یا فایل ویدیویی) برای سفارش Ads در انتظار —
+    # پیش از حالت پشتیبانی بررسی می‌شود تا فیلم مشتری در چت پشتیبانی
+    # گم نشود.
+    if attach_ad_video(store, chat_id, msg):
+        store.save_if_dirty()
+        return
+
     # حالت پشتیبانی: متن/عکس مشتری → اول پاسخ خودکار، بعد فوروارد به ادمین
     if store.in_support_mode(chat_id):
         if text:
@@ -1882,9 +1913,6 @@ def handle_message(store, msg):
 
     # رسید: عکس فیش یا هش تراکنش برای سفارش در انتظار (از وب‌اپ یا
     # سفارش دوباره) — قبل از پاسخ متفرقه بررسی می‌شود.
-    if attach_ad_video(store, chat_id, msg):
-        store.save_if_dirty()
-        return
     if attach_receipt(store, chat_id, msg):
         store.save_if_dirty()
         return
