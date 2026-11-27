@@ -50,7 +50,7 @@
  * --- payloads sent to the bot (exact JSON keys) ---
  * order:        {type:"order", service:"ads"|"members"|"bot",
  *                title, sub, channel_id, amount_usdt, discount_code,
- *                discount_usdt, payable_usdt, pay_from_wallet,
+ *                discount_usdt, payable_usdt, paid_by_wallet,
  *                receipt_kind:"photo"|"hash"|null, receipt_hash,
  *                receipt_file_name, receipt_file_size,
  *                receipt_photo_data (downscaled data URL or null),
