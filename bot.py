@@ -36,7 +36,7 @@ from pricing import (WALLET_ADDRESS, ads_price, member_price, bot_price,
                      compute_order_price, loyalty_eligible,
                      is_valid_channel_id, is_valid_referral_code)
 
-BOT_VERSION = "2026-11-27-1.0.9"   # فقط توی لاگ و برای ادمین در /start نوشته می‌شه
+BOT_VERSION = "2026-11-27-1.0.10"   # فقط توی لاگ و برای ادمین در /start نوشته می‌شه
 BOT_USERNAME = "GodStarShopBot"  # ربات اصلی؛ هرگز GodStarServiceBot (بازنشسته) نیست
 WEBAPP_URL = os.environ.get("WEBAPP_URL") or "https://821abolfazl.github.io/godstar-bot/"
 
@@ -445,7 +445,7 @@ def order_summary_text(order, user=None):
         lines.append(f"متن تبلیغ: {details['ad_text'][:200]}")
     if details.get("media") in ("photo", "video"):
         media_label = "عکس" if details["media"] == "photo" else "ویدیو"
-        if details.get("ad_media_file_id"):
+        if details.get("ad_media_sent") or details.get("ad_media_file_id"):
             lines.append(f"رسانه‌ی تبلیغ: {media_label} ارسال شد 📎")
         else:
             lines.append(f"رسانه‌ی تبلیغ: {media_label} — مشتری در چت می‌فرستد 📷")
@@ -986,6 +986,50 @@ def attach_receipt(store, chat_id, msg):
     return True
 
 
+def _awaiting_ad_video_order(store, chat_id):
+    """تازه‌ترین سفارش Ads در انتظار همان مشتری که رسانه‌اش «ویدیو»
+    است و هنوز فیلمش نرسیده (فیلم در چت فرستاده می‌شود)."""
+    orders = store.list_orders(status="pending", user_id=chat_id)
+    for o in reversed(orders):  # تازه‌ترین اول
+        details = o.get("details") or {}
+        if (o.get("service") == "ads" and details.get("media") == "video"
+                and not details.get("ad_media_sent")
+                and not details.get("ad_media_file_id")):
+            return o
+    return None
+
+
+def attach_ad_video(store, chat_id, msg):
+    """فیلم تبلیغی که مشتری در چت می‌فرستد را به سفارش Ads در انتظار
+    می‌چسباند و به ادمین می‌فرستد؛ خروجی True یعنی فیلم رسید.
+
+    فیلم هرگز با خود سفارش فرستاده نمی‌شود (مینی‌اپ آن را در پی‌لود
+    نمی‌گذارد): مشتری پس از ثبت سفارش، فیلم را همین‌جا در گفتگو
+    می‌فرستد. خود فیلم هم هیچ‌جا نگه داشته نمی‌شود؛ فقط یک علامت
+    «رسید ✓» روی سفارش می‌ماند تا دوباره همان فیلم خواسته نشود.
+    """
+    video = msg.get("video")
+    if not video:
+        return False
+    order = _awaiting_ad_video_order(store, chat_id)
+    if order is None:
+        return False
+    file_id = video.get("file_id") or ""
+    order.setdefault("details", {})["ad_media_sent"] = True
+    user = store.get_user(chat_id) or {}
+    sender = user.get("first_name") or user.get("username") or str(chat_id)
+    uname = f" (@{user['username']})" if user.get("username") else ""
+    send_message(chat_id,
+                 f"✅ فیلم تبلیغ سفارش {order['order_no']} دریافت شد؛ "
+                 "در انتظار تایید است. 🙏")
+    if ADMIN_CHAT_ID:
+        api("sendVideo", chat_id=ADMIN_CHAT_ID, video=file_id,
+            caption=f"🎬 فیلم تبلیغ سفارش {order['order_no']} رسید.\n"
+                    f"از: {sender}{uname} ({chat_id})")
+    store.save_if_dirty()
+    return True
+
+
 def check_reminders(store):
     """یادآوری تمدید اشتراک (۳ روز مانده) و سفارش در انتظار (بیش از ۲ ساعت).
 
@@ -1278,9 +1322,10 @@ def _largest_video_file_id(res):
 
 def _attach_ad_media_from_webapp(store, order, payload):
     """عکس/فیلم تبلیغ سفارش Ads که از مینی‌اپ می‌رسد (ad_media_data)
-    را به ادمین می‌فرستد و file_id آن را در جزئیات سفارش می‌گذارد؛
-    خروجی True یعنی رسانه رسید و دیگر لازم نیست مشتری آن را در چت
-    بفرستد. عکس کوچک‌شده (JPEG) و فیلم تا ۵ مگابایت پذیرفته می‌شود."""
+    را به ادمین می‌فرستد؛ خروجی True یعنی رسانه رسید و دیگر لازم
+    نیست مشتری آن را در چت بفرستد. عکس کوچک‌شده (JPEG) و فیلم تا ۵
+    مگابایت پذیرفته می‌شود. خود رسانه هیچ‌جا نگه داشته نمی‌شود؛
+    فقط یک علامت «رسید ✓» روی سفارش می‌ماند."""
     data = payload.get("ad_media_data")
     kind = payload.get("ad_media_kind") or payload.get("media") or ""
     if not data or kind not in ("photo", "video") or not ADMIN_CHAT_ID:
@@ -1297,7 +1342,7 @@ def _attach_ad_media_from_webapp(store, order, payload):
         fid = _largest_video_file_id(res)
     if not fid:
         return False
-    order.setdefault("details", {})["ad_media_file_id"] = fid
+    order.setdefault("details", {})["ad_media_sent"] = True
     store.dirty = True
     return True
 
@@ -1837,6 +1882,9 @@ def handle_message(store, msg):
 
     # رسید: عکس فیش یا هش تراکنش برای سفارش در انتظار (از وب‌اپ یا
     # سفارش دوباره) — قبل از پاسخ متفرقه بررسی می‌شود.
+    if attach_ad_video(store, chat_id, msg):
+        store.save_if_dirty()
+        return
     if attach_receipt(store, chat_id, msg):
         store.save_if_dirty()
         return
