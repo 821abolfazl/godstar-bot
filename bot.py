@@ -36,7 +36,7 @@ from pricing import (WALLET_ADDRESS, ads_price, member_price, bot_price,
                      compute_order_price, loyalty_eligible,
                      is_valid_channel_id, is_valid_referral_code)
 
-BOT_VERSION = "2026-11-27-1.0.7"   # فقط توی لاگ و برای ادمین در /start نوشته می‌شه
+BOT_VERSION = "2026-11-27-1.0.8"   # فقط توی لاگ و برای ادمین در /start نوشته می‌شه
 BOT_USERNAME = "GodStarShopBot"  # ربات اصلی؛ هرگز GodStarServiceBot (بازنشسته) نیست
 WEBAPP_URL = os.environ.get("WEBAPP_URL") or "https://821abolfazl.github.io/godstar-bot/"
 
@@ -363,14 +363,19 @@ def support_reply_keyboard(customer_id):
     ]]}
 
 
+def _set_inline_keyboard(chat_id, message_id, keyboard):
+    """دکمه‌های شیشه‌ای یک پیام را با کیبورد تازه جایگزین می‌کند."""
+    if not chat_id or not message_id:
+        return
+    api("editMessageReplyMarkup", chat_id=chat_id, message_id=message_id,
+        reply_markup=json.dumps(keyboard, ensure_ascii=False))
+
+
 def _clear_inline_keyboard(chat_id, message_id):
     """دکمه‌های شیشه‌ای یک پیام را برمی‌دارد — بعد از اینکه ادمین
     تصمیم نهایی را گرفت (تایید/رد)، دکمه‌های تایید و رد نباید روی
     اعلان بمانند وگرنه ادمین دوباره روی سفارشِ بررسی‌شده می‌زند."""
-    if not chat_id or not message_id:
-        return
-    api("editMessageReplyMarkup", chat_id=chat_id, message_id=message_id,
-        reply_markup=json.dumps({"inline_keyboard": []}, ensure_ascii=False))
+    _set_inline_keyboard(chat_id, message_id, {"inline_keyboard": []})
 
 
 # ---------- متن‌ها ----------
@@ -383,7 +388,7 @@ def welcome_text(is_admin_user):
     if is_admin_user:
         text += (f"\n\n👑 شما ادمین هستید\n"
                  f"نسخه‌ی ربات: {BOT_VERSION}\n"
-                 "دستورهای ادمین: /orders ،/approve ،/reject ،/stats ،/broadcast ،/users")
+                 "دستورهای ادمین: /orders ،/approve ،/reject ،/progress ،/stats ،/broadcast ،/users")
     return text
 
 
@@ -683,22 +688,100 @@ def notify_admin_new_order(store, order, receipt_sent=False):
 
 def confirm_order(store, order_no):
     """تایید سفارش توسط ادمین: وضعیت + پیام خودکار به مشتری + اثرات جانبی.
-    خروجی سفارش تاییدشده."""
+    خروجی سفارش تاییدشده. مرحله‌ی سفارش خدمتی از همین‌جا «تایید شده»
+    است؛ شارژ کیف پول با تایید تکمیل است."""
     order = store.set_order_status(order_no, "confirmed")
     user_id = order["user_id"]
+    details = dict(order.get("details") or {})
     if order.get("type") == "wallet_charge":
+        details["progress"] = "completed"
         store.credit_wallet(user_id, float(order["amount"]),
                             note=f"شارژ کیف پول ({order_no})")
     else:
+        details["progress"] = "confirmed"
         user = store.ensure_user(user_id)
         user["completed_orders"] = int(user.get("completed_orders") or 0) + 1
         store.dirty = True
-    send_message(user_id,
-                 f"✅ سفارشت تایید شد!\n\n"
-                 f"شماره سفارش: {order_no}\n"
-                 f"مبلغ: {order['amount']} USDT\n"
-                 "به‌زودی انجامش می‌دهیم و نتیجه را خبر می‌دهیم. 🙏")
+    order["details"] = details
+    store.dirty = True
+    confirm_text = (f"✅ سفارشت تایید شد!\n\n"
+                    f"شماره سفارش: {order_no}\n"
+                    f"مبلغ: {order['amount']} USDT\n"
+                    "به‌زودی انجامش می‌دهیم و نتیجه را خبر می‌دهیم. 🙏")
+    if order.get("type") != "wallet_charge":
+        confirm_text += "\n\n📍 مراحل انجام سفارشت را در «سفارش‌های من» می‌توانی ببینی."
+    send_message(user_id, confirm_text)
     return order
+
+
+# مراحل انجام سفارش (v1.0.8) — بعد از تایید، ادمین مرحله را جلو می‌برد
+# و مشتری همان مرحله را در «سفارش‌های من» می‌بیند. پیشرفت در
+# details["progress"] نگه داشته می‌شود تا نیازی به ستون تازه نباشد.
+PROGRESS_STAGES = ["confirmed", "in_progress", "completed"]
+PROGRESS_LABELS = {"confirmed": "تایید شده",
+                   "in_progress": "در حال انجام",
+                   "completed": "تکمیل شده"}
+
+
+def order_progress(order):
+    """مرحله‌ی فعلی سفارش؛ سفارش‌های تاییدشده‌ی قدیمی (بدون progress)
+    در مرحله‌ی «تایید شده» هستند."""
+    if order is None:
+        return None
+    details = order.get("details") or {}
+    progress = details.get("progress")
+    if progress in PROGRESS_STAGES:
+        return progress
+    if order.get("status") == "confirmed":
+        return "confirmed"
+    return None
+
+
+def progress_keyboard(order_no, current):
+    """دکمه‌ی «مرحله‌ی بعد» زیر اعلان ادمین؛ در مرحله‌ی آخر دکمه‌ای نیست."""
+    if current not in PROGRESS_STAGES:
+        return {"inline_keyboard": []}
+    idx = PROGRESS_STAGES.index(current)
+    if idx >= len(PROGRESS_STAGES) - 1:
+        return {"inline_keyboard": []}
+    nxt = PROGRESS_STAGES[idx + 1]
+    return {"inline_keyboard": [[
+        {"text": f"➡️ مرحله‌ی بعد: {PROGRESS_LABELS[nxt]}",
+         "callback_data": f"progress:{order_no}"},
+    ]]}
+
+
+def advance_order_progress(store, order_no):
+    """سفارش را یک مرحله جلو می‌برد و (order, مرحله‌ی تازه) برمی‌گرداند."""
+    order = store.get_order(order_no)
+    if order is None:
+        raise ValueError("سفارشی با این شماره پیدا نشد.")
+    if order.get("status") != "confirmed":
+        raise ValueError("فقط سفارش تاییدشده مرحله دارد.")
+    if order.get("type") == "wallet_charge":
+        raise ValueError("شارژ کیف پول با تایید تکمیل شد؛ مرحله ندارد.")
+    current = order_progress(order) or "confirmed"
+    idx = PROGRESS_STAGES.index(current)
+    if idx >= len(PROGRESS_STAGES) - 1:
+        raise ValueError("این سفارش به مرحله‌ی آخر رسیده است.")
+    new_progress = PROGRESS_STAGES[idx + 1]
+    details = dict(order.get("details") or {})
+    details["progress"] = new_progress
+    order["details"] = details
+    store.dirty = True
+    return order, new_progress
+
+
+def _notify_progress(order, new_progress):
+    """مشتری را از رسیدن سفارش به مرحله‌ی تازه خبر می‌کند."""
+    label = PROGRESS_LABELS[new_progress]
+    if new_progress == "completed":
+        send_message(order["user_id"],
+                     f"✅ سفارش {order['order_no']} تکمیل شد! 🎉\n\n"
+                     "ممنون از اعتمادت 🙏")
+    else:
+        send_message(order["user_id"],
+                     f"📍 سفارش {order['order_no']} به مرحله‌ی «{label}» رسید.")
 
 
 # دلایل آماده‌ی رد سفارش — ادمین یکی را انتخاب می‌کند یا دلیل خودش را می‌نویسد
@@ -1371,6 +1454,19 @@ def handle_admin_command(store, chat_id, text):
             send_message(chat_id, f"✅ سفارش {order['order_no']} تایید شد.")
         except ValueError as ex:
             send_message(chat_id, f"⚠️ {ex}")
+    elif cmd == "/progress" and len(parts) >= 2:
+        try:
+            order, new_progress = advance_order_progress(store, parts[1])
+            _notify_progress(order, new_progress)
+            label = PROGRESS_LABELS[new_progress]
+            idx = PROGRESS_STAGES.index(new_progress)
+            nxt_text = (f" مرحله‌ی بعد: {PROGRESS_LABELS[PROGRESS_STAGES[idx + 1]]}."
+                        if idx + 1 < len(PROGRESS_STAGES)
+                        else " این مرحله‌ی آخر است.")
+            send_message(chat_id,
+                         f"سفارش {order['order_no']} به مرحله‌ی «{label}» رسید.{nxt_text}")
+        except ValueError as ex:
+            send_message(chat_id, f"⚠️ {ex}")
     elif cmd == "/reject" and len(parts) >= 2:
         try:
             ask_reject_reason(store, chat_id, parts[1])
@@ -1500,7 +1596,7 @@ def handle_admin_command(store, chat_id, text):
         send_message(chat_id, ADMIN_COMMANDS_TEXT)
 
 
-ADMIN_COMMANDS = {"/orders", "/approve", "/reject", "/codes", "/addcode",
+ADMIN_COMMANDS = {"/orders", "/approve", "/reject", "/progress", "/codes", "/addcode",
                   "/delcode", "/broadcast", "/stats", "/users", "/autoreplies",
                   "/addreply", "/delreply"}
 
@@ -1742,9 +1838,25 @@ def handle_callback(store, query):
     if data.startswith("approve:"):
         order_no = data[len("approve:"):]
         try:
-            confirm_order(store, order_no)
-            _clear_inline_keyboard(chat_id, admin_msg_id)
+            order = confirm_order(store, order_no)
+            # به‌جای برداشتن دکمه‌ها، دکمه‌ی «مرحله‌ی بعد» می‌آید؛
+            # شارژ کیف پول با تایید تکمیل است و مرحله ندارد.
+            if order.get("type") == "wallet_charge":
+                _clear_inline_keyboard(chat_id, admin_msg_id)
+            else:
+                _set_inline_keyboard(chat_id, admin_msg_id,
+                                     progress_keyboard(order_no, "confirmed"))
             answer_callback(query_id, f"سفارش {order_no} تایید شد ✅")
+        except ValueError as ex:
+            answer_callback(query_id, str(ex))
+    elif data.startswith("progress:"):
+        order_no = data[len("progress:"):]
+        try:
+            order, new_progress = advance_order_progress(store, order_no)
+            _notify_progress(order, new_progress)
+            _set_inline_keyboard(chat_id, admin_msg_id,
+                                 progress_keyboard(order_no, new_progress))
+            answer_callback(query_id, f"مرحله: {PROGRESS_LABELS[new_progress]}")
         except ValueError as ex:
             answer_callback(query_id, str(ex))
     elif data.startswith("reject_reason_type:"):
