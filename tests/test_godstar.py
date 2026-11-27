@@ -2132,6 +2132,159 @@ class AdminUsersListTest(unittest.TestCase):
         self.assertNotIn("/users", godstar.welcome_text(False))
 
 
+class WalletPayAndKeyboardTest(unittest.TestCase):
+    """v1.0.7: پرداخت از کیف پول (کلید پی‌لود)، ثبت مستقیم ربات
+    اختصاصی، و برداشته شدن دکمه‌های تایید/رد بعد از تصمیم ادمین."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.store = Store(state_file=os.path.join(self.tmp.name, "state.json"))
+        self.store.load()
+        godstar.ensure_defaults(self.store)
+        self.sent = []
+        self.api_calls = []
+        self._orig_send = godstar.send_message
+        self._orig_api = godstar.api
+        self._orig_admin = godstar.ADMIN_CHAT_ID
+        godstar.send_message = lambda chat_id, text, reply_markup=None: self.sent.append(
+            (chat_id, text, reply_markup)) or {"message_id": 1}
+        godstar.api = lambda method, **data: self.api_calls.append(
+            (method, data)) or {"message_id": 99}
+        godstar.ADMIN_CHAT_ID = "278899906"
+
+    def tearDown(self):
+        godstar.send_message = self._orig_send
+        godstar.api = self._orig_api
+        godstar.ADMIN_CHAT_ID = self._orig_admin
+        self.tmp.cleanup()
+
+    def _webapp_msg(self, chat_id, payload):
+        import json as _json
+        return {"chat": {"id": chat_id}, "from": {"id": chat_id, "username": "u"},
+                "web_app_data": {"data": _json.dumps(payload, ensure_ascii=False)}}
+
+    def _wallet_order_payload(self, **extra):
+        payload = {"type": "order", "service": "members",
+                   "title": "خرید ممبر آپلودری",
+                   "channel_id": "@GodNews24",
+                   "quantity": 1000,
+                   "amount_usdt": 3, "payable_usdt": 3}
+        payload.update(extra)
+        return payload
+
+    def test_wallet_order_via_paid_by_wallet_key(self):
+        # دقیقاً همان پی‌لودی که مینی‌اپ ۱٫۰٫۷ می‌فرستد
+        self.store.credit_wallet(111, 100, note="test")
+        godstar.handle_web_app_data(
+            self.store, self._webapp_msg(111, self._wallet_order_payload(
+                paid_by_wallet=True)))
+        order = self.store.get_order("GS-1001")
+        self.assertIsNotNone(order)
+        self.assertTrue(order["paid_by_wallet"])
+        self.assertEqual(self.store.wallet_balance(111), 97.0)
+        self.assertFalse(any("رسید" in t for _, t, _ in self.sent))
+
+    def test_wallet_order_via_legacy_pay_from_wallet_key(self):
+        # نسخه‌های قدیمیِ کش‌شده‌ی مینی‌اپ کلید pay_from_wallet
+        # می‌فرستادند و ربات آن را نمی‌دید — رگرسیون خطای «رسید لازم است»
+        self.store.credit_wallet(111, 100, note="test")
+        godstar.handle_web_app_data(
+            self.store, self._webapp_msg(111, self._wallet_order_payload(
+                pay_from_wallet=True)))
+        order = self.store.get_order("GS-1001")
+        self.assertIsNotNone(order)
+        self.assertTrue(order["paid_by_wallet"])
+        self.assertEqual(self.store.wallet_balance(111), 97.0)
+
+    def test_wallet_order_without_receipt_still_rejected(self):
+        godstar.handle_web_app_data(
+            self.store, self._webapp_msg(111, self._wallet_order_payload()))
+        self.assertIsNone(self.store.get_order("GS-1001"))
+        self.assertTrue(any("رسید" in t for _, t, _ in self.sent))
+
+    def test_custom_bot_order_via_payload_no_receipt(self):
+        # ربات اختصاصی مبلغ صفر دارد؛ مستقیم ثبت می‌شود، بدون رسید
+        godstar.handle_web_app_data(
+            self.store, self._webapp_msg(111, {
+                "type": "order", "service": "bot",
+                "title": "ربات تلگرام",
+                "sub": "ربات اختصاصی — @GodNews24",
+                "channel_id": "@GodNews24",
+                "amount_usdt": 0, "payable_usdt": 0,
+                "paid_by_wallet": False,
+                "bot_type": "custom", "plan_months": None,
+                "plan_price_usdt": None, "notes": "ربات فروشگاه می‌خواهم"}))
+        order = self.store.get_order("GS-1001")
+        self.assertIsNotNone(order)
+        self.assertEqual(order["amount"], "0.00")
+        self.assertEqual(order["status"], "pending")
+        self.assertTrue(any("سفارش شما ثبت شد" in t for _, t, _ in self.sent))
+
+    def _pending_order(self):
+        return godstar.place_order(
+            self.store, 111, "members",
+            {"count": 1000, "channel_id": "@GodNews24"}, tx_hash="abc")
+
+    def _admin_query(self, data, message_id):
+        return {"data": data, "id": "q1",
+                "message": {"message_id": message_id,
+                            "chat": {"id": 278899906}}}
+
+    def _keyboard_clears(self):
+        return [d for m, d in self.api_calls
+                if m == "editMessageReplyMarkup"]
+
+    def test_approve_callback_clears_notification_keyboard(self):
+        self._pending_order()
+        godstar.handle_callback(
+            self.store, self._admin_query("approve:GS-1001", 55))
+        self.assertEqual(self.store.get_order("GS-1001")["status"], "confirmed")
+        clears = self._keyboard_clears()
+        self.assertEqual(len(clears), 1)
+        self.assertEqual(clears[0]["message_id"], 55)
+        self.assertEqual(clears[0]["reply_markup"],
+                         '{"inline_keyboard": []}')
+
+    def test_reject_callback_clears_notification_keyboard(self):
+        self._pending_order()
+        godstar.handle_callback(
+            self.store, self._admin_query("reject:GS-1001", 55))
+        # پیام انتخاب دلیل فرستاده شد و دکمه‌های اعلان اصلی برداشته شدند
+        self.assertTrue(any("دلیل رد را انتخاب کن" in t for _, t, _ in self.sent))
+        clears = self._keyboard_clears()
+        self.assertEqual(len(clears), 1)
+        self.assertEqual(clears[0]["message_id"], 55)
+
+    def test_reject_reason_callback_clears_picker_keyboard(self):
+        self._pending_order()
+        godstar.handle_callback(
+            self.store, self._admin_query("reject_reason:GS-1001:1", 77))
+        self.assertEqual(self.store.get_order("GS-1001")["status"], "rejected")
+        clears = self._keyboard_clears()
+        self.assertEqual(len(clears), 1)
+        self.assertEqual(clears[0]["message_id"], 77)
+
+    def test_reject_cancel_clears_picker_keyboard(self):
+        self._pending_order()
+        godstar.handle_callback(
+            self.store, self._admin_query("reject_cancel:GS-1001", 88))
+        clears = self._keyboard_clears()
+        self.assertEqual(len(clears), 1)
+        self.assertEqual(clears[0]["message_id"], 88)
+
+    def test_typed_reject_reason_clears_picker_keyboard(self):
+        self._pending_order()
+        godstar.handle_callback(
+            self.store, self._admin_query("reject_reason_type:GS-1001", 66))
+        admin_msg = {"chat": {"id": 278899906},
+                     "from": {"id": 278899906}, "text": "دلیل تستی"}
+        godstar.handle_message(self.store, admin_msg)
+        self.assertEqual(self.store.get_order("GS-1001")["status"], "rejected")
+        clears = self._keyboard_clears()
+        self.assertEqual(len(clears), 1)
+        self.assertEqual(clears[0]["message_id"], 66)
+
+
 class GetUpdatesTest(unittest.TestCase):
     def setUp(self):
         self._orig_get = godstar.requests.get
