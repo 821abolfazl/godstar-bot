@@ -2234,7 +2234,9 @@ class WalletPayAndKeyboardTest(unittest.TestCase):
         return [d for m, d in self.api_calls
                 if m == "editMessageReplyMarkup"]
 
-    def test_approve_callback_clears_notification_keyboard(self):
+    def test_approve_callback_sets_progress_keyboard(self):
+        # (v1.0.8) بعد از تایید سفارش خدمتی، به‌جای برداشتن دکمه‌ها،
+        # دکمه‌ی «مرحله‌ی بعد» می‌آید.
         self._pending_order()
         godstar.handle_callback(
             self.store, self._admin_query("approve:GS-1001", 55))
@@ -2242,6 +2244,21 @@ class WalletPayAndKeyboardTest(unittest.TestCase):
         clears = self._keyboard_clears()
         self.assertEqual(len(clears), 1)
         self.assertEqual(clears[0]["message_id"], 55)
+        import json as _json
+        kb = _json.loads(clears[0]["reply_markup"])
+        btn = kb["inline_keyboard"][0][0]
+        self.assertEqual(btn["callback_data"], "progress:GS-1001")
+        self.assertIn("در حال انجام", btn["text"])
+
+    def test_approve_wallet_charge_clears_keyboard(self):
+        # شارژ کیف پول با تایید تکمیل است؛ مرحله ندارد، پس دکمه‌ها
+        # برداشته می‌شوند.
+        godstar.place_order(
+            self.store, 111, "wallet_charge", {"amount": 20}, tx_hash="abc")
+        godstar.handle_callback(
+            self.store, self._admin_query("approve:GS-1001", 55))
+        clears = self._keyboard_clears()
+        self.assertEqual(len(clears), 1)
         self.assertEqual(clears[0]["reply_markup"],
                          '{"inline_keyboard": []}')
 
