@@ -36,7 +36,7 @@ from pricing import (WALLET_ADDRESS, ads_price, member_price, bot_price,
                      compute_order_price, loyalty_eligible,
                      is_valid_channel_id, is_valid_referral_code)
 
-BOT_VERSION = "2026-11-27-1.0.8"   # فقط توی لاگ و برای ادمین در /start نوشته می‌شه
+BOT_VERSION = "2026-11-27-1.0.9"   # فقط توی لاگ و برای ادمین در /start نوشته می‌شه
 BOT_USERNAME = "GodStarShopBot"  # ربات اصلی؛ هرگز GodStarServiceBot (بازنشسته) نیست
 WEBAPP_URL = os.environ.get("WEBAPP_URL") or "https://821abolfazl.github.io/godstar-bot/"
 
@@ -319,6 +319,7 @@ def admin_keyboard():
         [{"text": "📣 پیام همگانی"}, {"text": "📊 آمار"}],
         [{"text": "💬 پاسخ‌های خودکار"}, {"text": "➕ ساخت پاسخ خودکار"}],
         [{"text": "🗑 حذف پاسخ خودکار"}, {"text": "👥 کاربران"}],
+        [{"text": "📋 همه‌ی سفارش‌ها"}],
         [{"text": "🔙 بازگشت به منو"}],
     ], "resize_keyboard": True}
 
@@ -337,6 +338,7 @@ ADMIN_KEYBOARD_COMMANDS = {
     "➕ ساخت پاسخ خودکار": "/addreply",
     "🗑 حذف پاسخ خودکار": "/delreply",
     "👥 کاربران": "/users",
+    "📋 همه‌ی سفارش‌ها": "/allorders",
 }
 
 
@@ -388,7 +390,7 @@ def welcome_text(is_admin_user):
     if is_admin_user:
         text += (f"\n\n👑 شما ادمین هستید\n"
                  f"نسخه‌ی ربات: {BOT_VERSION}\n"
-                 "دستورهای ادمین: /orders ،/approve ،/reject ،/progress ،/stats ،/broadcast ،/users")
+                 "دستورهای ادمین: /orders ،/allorders ،/approve ،/reject ،/progress ،/stats ،/broadcast ،/users")
     return text
 
 
@@ -455,9 +457,25 @@ def order_summary_text(order, user=None):
         lines.append(f"توضیحات: {details['description'][:200]}")
     if user:
         name = user.get("first_name") or user.get("username") or ""
-        lines.append(f"مشتری: {name} ({order['user_id']})")
+        uname = f" (@{user['username']})" if user.get("username") else ""
+        lines.append(f"مشتری: {name}{uname} — 🆔 {order['user_id']}")
     lines.append(f"وضعیت: {status_label(order.get('status'))}")
     return "\n".join(lines)
+
+
+def order_list_line(order, user=None):
+    """یک خط فشرده برای /allorders: شماره، خدمت، مبلغ، وضعیت (+مرحله) و مشتری."""
+    status = status_label(order.get("status"))
+    progress = order_progress(order)
+    if progress and order.get("status") == "confirmed":
+        status = PROGRESS_LABELS[progress]
+    line = (f"🧾 {order['order_no']} — {service_label(order.get('service'))} — "
+            f"{order['amount']} USDT — {status}")
+    if user:
+        name = user.get("first_name") or user.get("username") or ""
+        uname = f" (@{user['username']})" if user.get("username") else ""
+        line += f"\n   مشتری: {name}{uname} — 🆔 {order['user_id']}"
+    return line
 
 
 def service_label(service):
@@ -1412,6 +1430,7 @@ PROMPT_FOR = {
 ADMIN_COMMANDS_TEXT = (
     "دستورهای ادمین:\n"
     "📦 سفارش‌های در انتظار\n"
+    "📋 همه‌ی سفارش‌ها — تازه‌ترین اول، با وضعیت و آیدی مشتری\n"
     "✅ تایید سفارش — با شماره سفارش\n"
     "❌ رد سفارش — با شماره سفارش\n"
     "🎟 کدهای تخفیف\n"
@@ -1448,6 +1467,22 @@ def handle_admin_command(store, chat_id, text):
             lines.append(order_summary_text(o, store.get_user(o["user_id"])))
             lines.append("—")
         send_message(chat_id, "\n".join(lines))
+    elif cmd == "/allorders":
+        orders = list(reversed(store.list_orders()))
+        if not orders:
+            send_message(chat_id, "هنوز سفارشی ثبت نشده است.")
+            return
+        # پیام تلگرام سقف ۴۰۹۶ کاراکتر دارد؛ لیست را در چند پیام
+        # می‌فرستیم تا سفارش صدم هم جا شود.
+        chunks = [f"📋 همه‌ی سفارش‌ها ({len(orders)} سفارش، تازه‌ترین اول):"]
+        for o in orders:
+            line = order_list_line(o, store.get_user(o["user_id"]))
+            if len(chunks[-1]) + 1 + len(line) > 3500:
+                chunks.append(line)
+            else:
+                chunks[-1] += "\n" + line
+        for chunk in chunks:
+            send_message(chat_id, chunk)
     elif cmd == "/approve" and len(parts) >= 2:
         try:
             order = confirm_order(store, parts[1])
@@ -1596,7 +1631,7 @@ def handle_admin_command(store, chat_id, text):
         send_message(chat_id, ADMIN_COMMANDS_TEXT)
 
 
-ADMIN_COMMANDS = {"/orders", "/approve", "/reject", "/progress", "/codes", "/addcode",
+ADMIN_COMMANDS = {"/orders", "/allorders", "/approve", "/reject", "/progress", "/codes", "/addcode",
                   "/delcode", "/broadcast", "/stats", "/users", "/autoreplies",
                   "/addreply", "/delreply"}
 
