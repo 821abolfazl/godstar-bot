@@ -121,9 +121,10 @@ def compute_order_price(base_amount, *, loyalty=False, referral=False, code_perc
     return final, discount, kind, percent
 
 
-def loyalty_eligible(completed_orders):
-    """وفاداری: بعد از ۳ سفارش تکمیل‌شده، ۱۰٪ تخفیف خودکار."""
-    return int(completed_orders or 0) >= LOYALTY_AFTER_ORDERS
+def loyalty_eligible(completed_orders, loyalty_uses=0):
+    """وفاداری: هر ۳ سفارش تکمیل‌شده، یک بار ۱۰٪ تخفیف؛ بعد از استفاده،
+    برای فعال شدن دوباره ۳ سفارش تکمیل‌شده‌ی دیگر لازم است."""
+    return int(completed_orders or 0) >= LOYALTY_AFTER_ORDERS * (int(loyalty_uses or 0) + 1)
 
 
 _CHANNEL_RE = re.compile(r"^@[A-Za-z0-9_]{4,}$")
