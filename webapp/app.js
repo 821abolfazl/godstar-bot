@@ -18,10 +18,12 @@
  * media (v1.0.6): the picked photo IS downscaled (max 1280px, JPEG)
  * and sent with the payload as `photo_data` / `receipt_photo_data` /
  * `ad_media_data`, so the admin actually sees the photo; the bot
- * forwards it with sendPhoto. An ad video is sent as a base64 data URL
- * when it is at most 4 MB, otherwise only its name goes and the bot
- * asks for it in the chat. The file is still previewed locally
- * (object URL) so the user sees what they picked.
+ * forwards it with sendPhoto. An ad video is never embedded in the
+ * payload (a base64 video made the submit time out on mobile data);
+ * only its name goes, the order is registered, and the customer sends
+ * the video in the chat — the bot forwards it to the admin. The file
+ * is still previewed locally (object URL) so the user sees what
+ * they picked.
  *
  * --- Telegram API use ---
  * ready() + expand() on load. BackButton drives in-app back navigation
