@@ -36,7 +36,7 @@ from pricing import (WALLET_ADDRESS, ads_price, member_price, bot_price,
                      compute_order_price, loyalty_eligible,
                      is_valid_channel_id, is_valid_referral_code)
 
-BOT_VERSION = "2026-11-26-1.0.6"   # فقط توی لاگ و برای ادمین در /start نوشته می‌شه
+BOT_VERSION = "2026-11-27-1.0.7"   # فقط توی لاگ و برای ادمین در /start نوشته می‌شه
 BOT_USERNAME = "GodStarShopBot"  # ربات اصلی؛ هرگز GodStarServiceBot (بازنشسته) نیست
 WEBAPP_URL = os.environ.get("WEBAPP_URL") or "https://821abolfazl.github.io/godstar-bot/"
 
@@ -361,6 +361,16 @@ def support_reply_keyboard(customer_id):
     return {"inline_keyboard": [[
         {"text": "✏️ پاسخ", "callback_data": f"support_reply:{customer_id}"},
     ]]}
+
+
+def _clear_inline_keyboard(chat_id, message_id):
+    """دکمه‌های شیشه‌ای یک پیام را برمی‌دارد — بعد از اینکه ادمین
+    تصمیم نهایی را گرفت (تایید/رد)، دکمه‌های تایید و رد نباید روی
+    اعلان بمانند وگرنه ادمین دوباره روی سفارشِ بررسی‌شده می‌زند."""
+    if not chat_id or not message_id:
+        return
+    api("editMessageReplyMarkup", chat_id=chat_id, message_id=message_id,
+        reply_markup=json.dumps({"inline_keyboard": []}, ensure_ascii=False))
 
 
 # ---------- متن‌ها ----------
@@ -947,7 +957,12 @@ def process_webapp_payload(store, chat_id, payload):
             order = place_order(
                 store, chat_id, service, details,
                 discount_code=payload.get("discount_code"),
-                paid_by_wallet=bool(payload.get("paid_by_wallet")),
+                # مینی‌اپ کلید را paid_by_wallet می‌فرستد؛ نسخه‌های قدیمیِ
+                # کش‌شده‌ی مینی‌اپ pay_from_wallet می‌فرستادند — هر دو
+                # را می‌پذیریم تا پرداخت از کیف پول هیچ‌وقت به‌خاطر نام
+                # کلید به «رسید لازم است» نخورد.
+                paid_by_wallet=bool(payload.get("paid_by_wallet") or
+                                    payload.get("pay_from_wallet")),
                 tx_hash=payload.get("tx_hash") or payload.get("receipt_hash") or "",
                 receipt_file_id=payload.get("receipt_file_id") or "",
                 receipt_kind=receipt_kind)
@@ -1659,9 +1674,14 @@ def handle_message(store, msg):
                 store.save_if_dirty()
                 return
             cmd = prompt["cmd"]
+            reason_msg_id = prompt.get("msg_id")
             store.state["pending_prompt"].pop(str(chat_id), None)
             store.dirty = True
             handle_admin_command(store, chat_id, f"{cmd} {text}")
+            if reason_msg_id and cmd.startswith("/reject_reason"):
+                # دلیل تایپ شد و رد ثبت شد؛ دکمه‌های پیام انتخاب دلیل
+                # هم برداشته می‌شوند.
+                _clear_inline_keyboard(chat_id, reason_msg_id)
             store.save_if_dirty()
             return
 
@@ -1703,6 +1723,9 @@ def handle_callback(store, query):
     data = query.get("data") or ""
     chat_id = (query.get("message") or {}).get("chat", {}).get("id")
     query_id = query.get("id")
+    # آیدی پیامی که دکمه رویش زده شد — بعد از تصمیم نهایی، دکمه‌های
+    # شیشه‌ای همان پیام را برمی‌داریم.
+    admin_msg_id = (query.get("message") or {}).get("message_id")
     # سفارش دوباره مال مشتری است، نه ادمین؛ قبل از چک ادمین بررسی می‌شود.
     if data.startswith("reorder:"):
         order_no = data[len("reorder:"):]
@@ -1720,6 +1743,7 @@ def handle_callback(store, query):
         order_no = data[len("approve:"):]
         try:
             confirm_order(store, order_no)
+            _clear_inline_keyboard(chat_id, admin_msg_id)
             answer_callback(query_id, f"سفارش {order_no} تایید شد ✅")
         except ValueError as ex:
             answer_callback(query_id, str(ex))
@@ -1730,7 +1754,10 @@ def handle_callback(store, query):
             answer_callback(query_id, "این سفارش در انتظار نیست.")
         else:
             store.state.setdefault("pending_prompt", {})[str(chat_id)] = {
-                "cmd": f"/reject_reason {order_no}", "at": time.time()}
+                "cmd": f"/reject_reason {order_no}", "at": time.time(),
+                # آیدی پیام انتخاب دلیل — وقتی دلیل تایپ شد و رد ثبت
+                # شد، دکمه‌های همان پیام هم برداشته می‌شوند.
+                "msg_id": admin_msg_id}
             store.state.get("pending_reject", {}).pop(str(chat_id), None)
             store.dirty = True
             send_message(chat_id,
@@ -1749,6 +1776,7 @@ def handle_callback(store, query):
             order = reject_order(store, order_no, reason)
             store.state.get("pending_reject", {}).pop(str(chat_id), None)
             store.dirty = True
+            _clear_inline_keyboard(chat_id, admin_msg_id)
             answer_callback(query_id, f"سفارش {order_no} رد شد ❌")
             send_message(chat_id, f"❌ سفارش {order['order_no']} رد شد.\nدلیل: {reason}")
         except ValueError as ex:
@@ -1757,12 +1785,16 @@ def handle_callback(store, query):
         order_no = data[len("reject_cancel:"):]
         store.state.get("pending_reject", {}).pop(str(chat_id), None)
         store.dirty = True
+        _clear_inline_keyboard(chat_id, admin_msg_id)
         answer_callback(query_id, "لغو شد.")
         send_message(chat_id, f"رد سفارش {order_no} لغو شد؛ سفارش در انتظار می‌ماند.")
     elif data.startswith("reject:"):
         order_no = data[len("reject:"):]
         try:
             ask_reject_reason(store, chat_id, order_no)
+            # انتخاب دلیل در پیام تازه‌ای باز شد؛ دکمه‌های تایید/رد
+            # اعلان اصلی دیگر کاربرد ندارند.
+            _clear_inline_keyboard(chat_id, admin_msg_id)
             answer_callback(query_id, "دلیل رد را انتخاب کن.")
         except ValueError as ex:
             answer_callback(query_id, str(ex))
