@@ -1,7 +1,7 @@
 name: GodStar Bot
 
 # ربات فروش خدمات «گاد استار» (@GodStarServiceBot)
-# الگو از ربات دنبال‌کننده‌ی GodNews24: حلقه‌ی ۵۵ دقیقه‌ای + ماشه‌های
+# الگو از ربات دنبال‌کننده‌ی GodNews24: حلقه‌ی ۵ ساعته‌ای + ماشه‌های
 # زمان‌بندی‌شده‌ی ~۲۰ دقیقه‌ای به‌عنوان پشتیبان. ریپو عمومیه تا حلقه
 # سقف دقیقه‌ی Actions نداشته باشه؛ هیچ توکن یا داده‌ی حساسی توی ریپو نیست
 # (حافظه یا در سوپابیس است یا در فایل gitignoreشده).
@@ -22,7 +22,7 @@ concurrency:
 jobs:
   godstar-bot:
     runs-on: ubuntu-latest
-    timeout-minutes: 70
+    timeout-minutes: 360
     steps:
       - uses: actions/checkout@v4
 
@@ -40,5 +40,5 @@ jobs:
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
           SUPABASE_PUBLISHABLE_KEY: ${{ secrets.SUPABASE_PUBLISHABLE_KEY }}
           WEBAPP_URL: ${{ secrets.WEBAPP_URL }}
-          LOOP_MINUTES: 55
+          LOOP_MINUTES: 300
         run: python bot.py
